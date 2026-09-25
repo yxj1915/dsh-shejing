@@ -88,6 +88,7 @@ function childEnv() {
 
 export class LightroomBridge {
   #client = null
+  #connectAttempts = 0
   #connecting = null
   #log
 
@@ -96,6 +97,11 @@ export class LightroomBridge {
   }
 
   /** 当前是否已建立连接（不代表 Lightroom 本体在跑）。 */
+  /** 迄今为止发起过多少次连接尝试——测试用它证明「失败之后真的会再试」。 */
+  get connectAttempts() {
+    return this.#connectAttempts
+  }
+
   get connected() {
     return this.#client !== null
   }
@@ -132,6 +138,10 @@ export class LightroomBridge {
   async #connect() {
     if (this.#client !== null) return this.#client
     if (this.#connecting !== null) return this.#connecting
+    // 可观测的「真的又连了一次」。没有它，「失败后下次会重试」这件事在测试里
+    // 根本无法验证：写 `second !== null || bridge.connected` 的话，重试成功与
+    // 失败各占一边，断言恒真（审计员的变异证明了它可以被整段删掉而测试全绿）。
+    this.#connectAttempts += 1
 
     this.#connecting = (async () => {
       const transport = new StdioClientTransport({

@@ -93,13 +93,25 @@ await withBridge({ SHEJING_BRIDGE_ENTRY: FAKE, SHEJING_FAKE_LR_FAIL: '1' }, asyn
   check('失败后不会假装已连接', () => assert.equal(bridge.connected, false))
 
   // 第二次调用应当**重新尝试连接**，而不是永远记住失败。
+  //
+  // 这里原来写的是 `assert.ok(second !== null || bridge.connected)`——那条断言
+  // **不可能失败**：重试成功则 second 为 null 而 connected 为真，重试失败则 second
+  // 非 null，两种都很真。审计员把「永远记住失败」的变异打进去，测试全绿。
+  // 现在用连接次数证明：第二次调用必须真的又发起了一次连接尝试。
+  const attemptsBefore = bridge.connectAttempts
   let second = null
   try {
     await bridge.call('search_photos', {})
   } catch (caught) {
     second = caught
   }
-  check('失败后下一次调用会重试连接', () => assert.ok(second !== null || bridge.connected))
+  check('失败后下一次调用会重试连接（连接次数真的增加）', () => {
+    assert.ok(bridge.connectAttempts > attemptsBefore,
+      `第二次调用应当再发起一次连接：之前 ${attemptsBefore} 次，现在 ${bridge.connectAttempts} 次`)
+  })
+  check('重试仍然失败时如实抛错，不假装成功', () => {
+    assert.ok(second !== null, '桥接起不来时第二次调用也应当抛错')
+  })
 })
 
 console.log('\n—— 入口不存在 ——')

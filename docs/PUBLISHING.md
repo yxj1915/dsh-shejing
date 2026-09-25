@@ -98,6 +98,49 @@ git push -u origin main
 npm publish                # 去掉 --tag next，占 latest
 ```
 
+## 5. 以后怎么发（CI + OIDC，不带长期密钥）
+
+仓库里已经放了两个 workflow：
+
+| 文件 | 作用 |
+|---|---|
+| `.github/workflows/ci.yml` | push / PR 时跑六套测试 + 校验打包内容 |
+| `.github/workflows/publish.yml` | 手动或随 Release 触发，用 **trusted publishing (OIDC)** 发布 |
+
+**为什么不用 token**：npm 已在 2026 年 8 月限制带 bypass-2FA 的 granular token
+做账号与包管理操作，并计划于 2027 年 1 月取消它「直接发布」的能力，改成
+「暂存 + 人工 2FA 批准」。官方给的正路就是 OIDC 或 staged publishing。
+见 [2026-07-08 公告](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/)。
+
+**首次使用前要在 npmjs.com 上配置 trusted publisher**：
+Package → Settings → Trusted publishing → 添加 GitHub 仓库
+
+```
+组织/用户：yxj1915
+仓库：dsh-shejing
+Workflow 文件名：publish.yml
+环境：release
+```
+
+（环境名要与 `publish.yml` 里的 `environment: release` 一致；不想用环境就两边一起删。）
+
+之后无论手动 `workflow_dispatch` 还是发一个 GitHub Release，都会走 OIDC 发布，
+**仓库里不需要存任何密钥**。
+
+## 6. 打包器对新默认值的适配（npm v12）
+
+npm v12 起，`npm install` 的这几项默认变成「不自动做」：
+
+| 项 | 新默认 | 我们的情况 |
+|---|---|---|
+| `allowScripts` | 关 | 我们**没有任何安装期脚本**，消费者装包时什么都不会跑 |
+| `--allow-git` | none | 没有 git 依赖 |
+| `--allow-remote` | none | 没有远程 URL 依赖 |
+
+这是刻意设计的：桥接的启动路径用 `import.meta.url` 相对定位，**不靠 `postinstall`
+去写一个写死路径的启动器**。打包产物安装验证（`scripts/test-packed-install.mjs`）
+专门断言「桥接入口指向安装目录」，就是在守这条。
+
 ## 发布内容是什么
 
 `npm pack` 会包含（见 `package.json` 的 `files`）：

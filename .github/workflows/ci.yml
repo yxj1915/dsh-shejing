@@ -1,0 +1,48 @@
+name: CI
+
+# 跑六套测试里不需要真机、也不需要 DSH 运行时的那部分。
+#
+# 不跑的两类（见 README 的测试表）：
+#   · scripts/regression.mjs        需要一份真实的照片批次，不适合放 CI
+#   · scripts/test-packed-install.mjs 需要从 app.asar 抽出的 DSH 运行时（不可分发）
+# 那两类是**发布前手动跑**的闸门，见 docs/PUBLISHING.md。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建浏览器半边
+        run: node scripts/build-client.mjs
+
+      - name: 六套测试
+        env:
+          # 两套需要 DSH_HOME 的测试会往这里写，绝不指向真实的 ~/.dsh
+          DSH_HOME: ${{ runner.temp }}/shejing-home
+        run: |
+          mkdir -p "$DSH_HOME"
+          node scripts/test.mjs
+
+      - name: 校验打包内容
+        run: |
+          node scripts/build-client.mjs
+          npm pack --dry-run 2>&1 | tail -20

@@ -178,3 +178,17 @@ mdls -name kMDItemFNumber -name kMDItemExposureTimeSeconds \
     → 判断链路一律**直接走一次真正的 MCP 握手**，不要裸连。
       `scripts/live-check.mjs` 已按这条重写。
 
+34. **`export_photos` 要求目标目录已经存在。** 传一个不存在的目录会报
+    `<AgErrorText>缺少此操作的目标文件夹`（不是「创建失败」，是「缺少」）。
+    → `shejing_archive` 里调用前有 `ensureDir(dest)`，所以产品代码不受影响；
+      但自己直接调 `export_photos` 时别忘了先建目录。
+    实测：建好目录后同一个调用返回
+    `{"message": "Exported 1 photos to …"}`，且目标目录里真的出现了 JPEG。
+
+35. **调色写回在真机上确实验证通过（2026-09-25）。** 走了一遍完整链路：
+    `create_snapshot` → `set_develop_settings` → `set_tone_curve` →
+    `get_develop_settings` 读回核对 → `get_photo_preview` → `export_photos`。
+    读回结果与写入一致（`Contrast2012=14`、`Vibrance=18`），`ProcessVersion`
+    始终没被碰过（仍是 15.4），写中性值后也确实回到 0。
+    脚本：`scripts/live-grade.mjs`（只动克隆副本，结束会还原）。
+

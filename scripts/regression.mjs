@@ -15,7 +15,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -28,6 +28,8 @@ const batchIdFlag = process.argv.indexOf('--batch-id')
 const batchId = batchIdFlag === -1 ? undefined : process.argv[batchIdFlag + 1]
 /** 复用已有账本，跳过体检（体检要十几分钟，改下游逻辑时不必每次重跑）。 */
 const reuse = process.argv.includes('--reuse')
+
+const { batchIdFor } = await import('../src/batches.mjs')
 
 const dshHome = process.env.DSH_HOME
 if (dshHome === undefined) {
@@ -76,9 +78,13 @@ const call = async (name, args) => {
 
 /* ---------------------------------------------------------------- 1. 体检 */
 
+// 先数一遍源目录里的 RAW 张数，作为后面所有断言的基准。
+// 原来这里硬编码了 75——换一批照片跑就得改代码，而且改漏一处就会拿错基准去断言，
+// 那比不测更糟（断言会「通过」，只是通过的是错的东西）。
+const expectedCount = readdirSync(source).filter(f => f.toUpperCase().endsWith('.ARW')).length
+assert.ok(expectedCount > 0, `源目录里没有 ARW：${source}`)
+
 step('① 体检（shejing_checkup）')
-const batchDir = path.join(dshHome, 'shejing', 'batches',
-  batchId ?? readdirSync(path.join(dshHome, 'shejing', 'batches'))[0])
 const manifestPath = path.join(batchDir, 'manifest.json')
 
 if (reuse) {
@@ -93,14 +99,14 @@ assert.ok(existsSync(manifestPath), '账本没写出来')
 const manifest = JSON.parse(await (await import('node:fs/promises')).readFile(manifestPath, 'utf8'))
 const checkup = manifest.stages.checkup
 assert.equal(checkup.status, 'done')
-assert.equal(manifest.photo_count, 75, '应当数到 75 张')
+assert.equal(manifest.photo_count, expectedCount, `应当数到 ${expectedCount} 张`)
 assert.ok(Array.isArray(checkup.groups), 'groups 应当是数组')
 assert.ok(existsSync(checkup.contact_sheet), 'contact sheet 没生成')
-assert.equal(Object.keys(checkup.frames ?? {}).length, 75, '每张都应当有缩略图记录')
+assert.equal(Object.keys(checkup.frames ?? {}).length, expectedCount, '每张都应当有缩略图记录')
 
 const withEv = Object.values(checkup.frames).filter(f => f.ev !== null).length
 console.log(`   机身：${(manifest.camera || []).join('、') || '(未读到)'}`)
-console.log(`   分组：${checkup.groups.length} 组；有曝光数据的帧：${withEv}/75`)
+console.log(`   分组：${checkup.groups.length} 组；有曝光数据的帧：${withEv}/${expectedCount}`)
 const kinds = {}
 for (const g of checkup.groups) kinds[g.kind] = (kinds[g.kind] ?? 0) + 1
 console.log(`   类型分布：${JSON.stringify(kinds)}`)
@@ -141,7 +147,8 @@ const rejectDir = path.join(source, '非导入')
 await call('shejing_cull', { source, reject, ...(batchId === undefined ? {} : { batch_id: batchId }) })
 assert.ok(!existsSync(keepDir), '预演不该创建 可导入/')
 assert.ok(!existsSync(rejectDir), '预演不该创建 非导入/')
-assert.equal(readdirSync(source).filter(f => f.endsWith('.ARW')).length, 75, '预演后源目录应当仍是 75 张')
+assert.equal(readdirSync(source).filter(f => f.toUpperCase().endsWith('.ARW')).length, expectedCount,
+  `预演后源目录应当仍是 ${expectedCount} 张`)
 console.log('   预演确认：没建目录、没动文件 ✓')
 
 /* ---------------------------------------------------------------- 3. 真剔除 */
@@ -151,7 +158,7 @@ await call('shejing_cull', { source, reject, confirm: true, ...(batchId === unde
 const inKeep = readdirSync(keepDir).length
 const inReject = readdirSync(rejectDir).length
 console.log(`   可导入/ ${inKeep} 张 · 非导入/ ${inReject} 张`)
-assert.equal(inKeep + inReject, 75, '移动后总数应当守恒于 75')
+assert.equal(inKeep + inReject, expectedCount, `移动后总数应当守恒于 ${expectedCount}`)
 assert.equal(inReject, reject.length, '被剔的张数应当与名单一致')
 assert.equal(readdirSync(source).filter(f => f.endsWith('.ARW')).length, 0, '源目录里不该再留下未分类的 ARW')
 

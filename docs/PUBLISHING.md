@@ -33,6 +33,21 @@ tar -tzf .dev/dsh-shejing-*.tgz | head -20
 **桌面客户端的加载验证只能在发布之后做**——GUI 插件管理器只接受注册表上的包名，
 会拒绝本地路径。所以顺序是：先发一个预发布版本，装进桌面端，确认面板能加载，再发正式版。
 
+## 1.5 真机检查（需要 Lightroom，但**不需要账号**）
+
+上面所有自动化测试都用**假桥接**，测的是「我们自己的 MCP 客户端」。而
+「我们的客户端 ↔ 真 bridge ↔ Lightroom 里的 Lua 插件」这条链只有真机能验。
+
+先打开 Adobe Lightroom Classic（等它加载完增效工具，约 1.5 分钟），然后在
+文件 ▸ 增效工具管理器 ▸ Lightroom MCP 里点 Start Server。之后：
+
+```bash
+DSH_HOME=$PWD/.dev/dsh-home $NODE scripts/live-check.mjs
+```
+
+**全程只读**：只做搜索、读参数、取预览，不导入、不调色、不改目录数据库。
+它会逐项报告环境与链路，任何一步不通都给出可执行的恢复顺序。
+
 ## 2. 发预发布版本到 npm
 
 先把 `package.json` 里两处占位符换成真实地址：

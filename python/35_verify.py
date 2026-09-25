@@ -60,6 +60,37 @@ def query(catalog, sql, params=()):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+def _norm_path(p):
+    """把路径规范化成可比较的键：绝对 + 归一 + 大小写折叠（macOS 默认不敏感）。"""
+    return os.path.normpath(os.path.abspath(p)).casefold()
+
+
+# 目录数据库里，「一张照片」的完整路径要跨三张表拼出来：
+#   AgLibraryRootFolder.absolutePath  +  AgLibraryFolder.path  +  AgLibraryFile.basename.ext
+#
+# 原先只 SELECT fl.basename 然后按文件名建字典——这在两种很常见的情况下会给出
+# **错误的答案**：
+#   · 同名文件在别的文件夹里 → 一张从没导入过的照片被判成「已在目录里」，
+#     而这正是 shejing_verify 存在的唯一理由（识破「返回 ok 但实际没生效」）。
+#   · 虚拟副本 / 同一文件的多行 → 字典按行序任选一个，可能把主文件的 5 星覆盖成
+#     副本的 0 星，于是那张照片**从导出清单里消失**。
+FULL_PATH_SQL = (
+    "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension"
+)
+FULL_PATH_JOINS = (
+    " LEFT JOIN AgLibraryFolder fo ON fo.id_local = fl.folder"
+    " LEFT JOIN AgLibraryRootFolder rf ON rf.id_local = fo.rootFolder"
+)
+
+
+def full_path(root, folder, basename, extension):
+    """拼出完整路径；缺根目录信息时返回 None（宁可漏报，也不要错配到别的文件）。"""
+    if not basename or root is None:
+        return None
+    name = basename + (("." + extension) if extension else "")
+    return os.path.join(root, folder or "", name)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("batch_dir")
@@ -86,39 +117,64 @@ def main():
         print("找不到 Lightroom 目录数据库；用 --catalog 指定。")
         return 1
 
+    # 按**完整路径**取，不按文件名。同名文件在别的文件夹里时，按文件名会把
+    # 「从没导入过」判成「已导入」——而识破这种假成功正是本脚本存在的理由。
     rows = query(
         catalog,
-        "SELECT fl.basename, i.rating, i.colorLabels, i.pick "
-        "FROM Adobe_images i JOIN AgLibraryFile fl ON fl.id_local = i.rootFile",
+        FULL_PATH_SQL + ", i.rating, i.colorLabels, i.pick"
+        " FROM Adobe_images i JOIN AgLibraryFile fl ON fl.id_local = i.rootFile"
+        + FULL_PATH_JOINS,
     )
-    by_name = {b: dict(rating=r or 0, labels=c or "", pick=p or "") for b, r, c, p in rows}
+    by_path = {}
+    for root, folder, base, ext, rating, labels, pick in rows:
+        full = full_path(root, folder, base, ext)
+        if full is None:
+            continue
+        key = _norm_path(full)
+        entry = dict(rating=rating or 0, labels=labels or "", pick=pick or "")
+        # 同一路径可能有多行（虚拟副本、堆栈）。取**星级最高**的那一行：
+        # 行序是不确定的，用一个确定的规则，而且宁可多留一张 5 星，
+        # 也不要把用户评过 5 星的照片静默丢掉。
+        if key not in by_path or entry["rating"] > by_path[key]["rating"]:
+            by_path[key] = entry
+
+    def path_of(name):
+        return _norm_path(os.path.join(keep_dir, name))
 
     kw_rows = query(
         catalog,
-        "SELECT fl.basename, k.name FROM AgLibraryKeywordImage ki "
-        "JOIN AgLibraryKeyword k ON k.id_local = ki.tag "
-        "JOIN Adobe_images i ON i.id_local = ki.image "
-        "JOIN AgLibraryFile fl ON fl.id_local = i.rootFile",
+        "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension, k.name"
+        " FROM AgLibraryKeywordImage ki"
+        " JOIN AgLibraryKeyword k ON k.id_local = ki.tag"
+        " JOIN Adobe_images i ON i.id_local = ki.image"
+        " JOIN AgLibraryFile fl ON fl.id_local = i.rootFile"
+        + FULL_PATH_JOINS,
     )
     keywords = {}
-    for b, k in kw_rows:
-        keywords.setdefault(b, []).append(k)
+    for root, folder, base, ext, k in kw_rows:
+        full = full_path(root, folder, base, ext)
+        if full is not None:
+            keywords.setdefault(_norm_path(full), []).append(k)
 
     coll_rows = query(
         catalog,
-        "SELECT fl.basename, c.name FROM AgLibraryCollectionImage ci "
-        "JOIN AgLibraryCollection c ON c.id_local = ci.collection "
-        "JOIN Adobe_images i ON i.id_local = ci.image "
-        "JOIN AgLibraryFile fl ON fl.id_local = i.rootFile",
+        "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension, c.name"
+        " FROM AgLibraryCollectionImage ci"
+        " JOIN AgLibraryCollection c ON c.id_local = ci.collection"
+        " JOIN Adobe_images i ON i.id_local = ci.image"
+        " JOIN AgLibraryFile fl ON fl.id_local = i.rootFile"
+        + FULL_PATH_JOINS,
     )
     collections = {}
-    for b, c in coll_rows:
-        collections.setdefault(b, []).append(c)
+    for root, folder, base, ext, c in coll_rows:
+        full = full_path(root, folder, base, ext)
+        if full is not None:
+            collections.setdefault(_norm_path(full), []).append(c)
 
-    imported = [n for n in sorted(names) if n in by_name]
-    missing = [n for n in sorted(names) if n not in by_name]
-    rated = {n: by_name[n]["rating"] for n in imported if by_name[n]["rating"]}
-    labeled = {n: by_name[n]["labels"] for n in imported if by_name[n]["labels"]}
+    imported = [n for n in sorted(names) if path_of(n) in by_path]
+    missing = [n for n in sorted(names) if path_of(n) not in by_path]
+    rated = {n: by_path[path_of(n)]["rating"] for n in imported if by_path[path_of(n)]["rating"]}
+    labeled = {n: by_path[path_of(n)]["labels"] for n in imported if by_path[path_of(n)]["labels"]}
 
     report = dict(
         batch=batch,
@@ -129,8 +185,10 @@ def main():
         missing=missing,
         ratings={str(k): v for k, v in sorted(rated.items(), key=lambda x: -x[1])},
         color_labels=labeled,
-        keywords={n: keywords.get(n, []) for n in imported if keywords.get(n)},
-        collections={n: collections.get(n, []) for n in imported if collections.get(n)},
+        # 这两张表也是按**完整路径**作键的（与上面同一套逻辑），
+        # 用文件名去查会永远查不到——我改键时差点把这里漏掉。
+        keywords={n: keywords[path_of(n)] for n in imported if path_of(n) in keywords},
+        collections={n: collections[path_of(n)] for n in imported if path_of(n) in collections},
     )
 
     if args.json:

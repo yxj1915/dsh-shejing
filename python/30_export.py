@@ -75,14 +75,57 @@ def ratings_for(paths, catalog):
         con = sqlite3.connect(os.path.join(tmp, "cat.lrcat"))
         try:
             rows = con.execute(
-                "SELECT fl.basename, i.rating FROM Adobe_images i "
-                "JOIN AgLibraryFile fl ON fl.id_local=i.rootFile").fetchall()
+                FULL_PATH_SQL + ", i.rating"
+                " FROM Adobe_images i JOIN AgLibraryFile fl ON fl.id_local=i.rootFile"
+                + FULL_PATH_JOINS).fetchall()
         finally:
             con.close()
-        return {b: (r or 0) for b, r in rows}
+        # 按**完整路径**取。按文件名的话，同名文件在别的文件夹里会让一张
+        # 从没导入、没评过星的照片顶替掉真的那张。
+        out = {}
+        for root, folder, base, ext, rating in rows:
+            full = full_path(root, folder, base, ext)
+            if full is None:
+                continue
+            key = _norm_path(full)
+            value = rating or 0
+            if key not in out or value > out[key]:
+                out[key] = value
+        return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+
+
+def _norm_path(p):
+    """把路径规范化成可比较的键：绝对 + 归一 + 大小写折叠（macOS 默认不敏感）。"""
+    return os.path.normpath(os.path.abspath(p)).casefold()
+
+
+# 目录数据库里，「一张照片」的完整路径要跨三张表拼出来：
+#   AgLibraryRootFolder.absolutePath  +  AgLibraryFolder.path  +  AgLibraryFile.basename.ext
+#
+# 原先只 SELECT fl.basename 然后按文件名建字典——这在两种很常见的情况下会给出
+# **错误的答案**：
+#   · 同名文件在别的文件夹里 → 一张从没导入过的照片被判成「已在目录里」，
+#     而这正是 shejing_verify 存在的唯一理由（识破「返回 ok 但实际没生效」）。
+#   · 虚拟副本 / 同一文件的多行 → 字典按行序任选一个，可能把主文件的 5 星覆盖成
+#     副本的 0 星，于是那张照片**从导出清单里消失**。
+FULL_PATH_SQL = (
+    "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension"
+)
+FULL_PATH_JOINS = (
+    " LEFT JOIN AgLibraryFolder fo ON fo.id_local = fl.folder"
+    " LEFT JOIN AgLibraryRootFolder rf ON rf.id_local = fo.rootFolder"
+)
+
+
+def full_path(root, folder, basename, extension):
+    """拼出完整路径；缺根目录信息时返回 None（宁可漏报，也不要错配到别的文件）。"""
+    if not basename or root is None:
+        return None
+    name = basename + (("." + extension) if extension else "")
+    return os.path.join(root, folder or "", name)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -117,6 +160,12 @@ def main():
 
     catalog = find_catalog(args.catalog)
     stars = None if args.photos else ratings_for(cand_files, catalog)
+
+    def stars_of(name):
+        """按**完整路径**取星级——map 的键是规范化绝对路径，不是文件名。"""
+        if stars is None:
+            return 0
+        return stars.get(_norm_path(os.path.join(keep_dir, name)), 0)
     distribution = None
 
     if args.photos:
@@ -128,10 +177,10 @@ def main():
         return 1
     else:
         picked = [f for f in cand_files
-                  if f not in exclude and stars.get(f, 0) >= args.threshold]
+                  if f not in exclude and stars_of(f) >= args.threshold]
         why = "星级 ≥ %g" % args.threshold
-        distribution = {int(v): sum(1 for x in cand_files if stars.get(x, 0) == v)
-                        for v in sorted({stars.get(f, 0) for f in cand_files})}
+        distribution = {int(v): sum(1 for x in cand_files if stars_of(x) == v)
+                        for v in sorted({stars_of(f) for f in cand_files})}
 
     print("① 证据")
     print("  候选来源：%s" % why)

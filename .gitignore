@@ -1,0 +1,13 @@
+> 本地开发用的依赖闭包。发布走 package.json 的 dependencies，不进仓库。
+node_modules/
+
+# 隔离的开发实例（从 app.asar 抽出的 0.1.7 运行时 + 独立 DSH_HOME）
+.dev/
+
+# 构建/调试产物
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+/tmp/
+/scratch/

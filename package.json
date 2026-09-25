@@ -1,0 +1,51 @@
+{
+  "name": "dsh-shejing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shejing (摄鲸) — a photo workflow plugin for DSH. Checkup, cull, organize, grade, verify, archive and retrospective, driving Lightroom Classic through its own engine and catalog.",
+  "license": "MIT",
+  "author": "dsh-shejing contributors",
+  "homepage": "https://github.com/REPLACE_ME/dsh-shejing#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE_ME/dsh-shejing.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "lrbridge",
+    "python",
+    "skills",
+    "docs",
+    "cordis.patch.yml",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "prepublishOnly": "node scripts/build-client.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "regression": "node scripts/regression.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ajv": "^8.20.0"
+  }
+}

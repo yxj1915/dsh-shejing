@@ -1,0 +1,14 @@
+# dsh-shejing 的 profile 层。
+#
+# 只有一行：把插件本身挂上去。
+#
+# 为什么这里没有 @deepseek-ai/dsh-mcp-client 行：
+#   mcp-client 是纯配置驱动的插件，command 是直接交给 spawn 的字符串，
+#   而发布到 npm 的包无法知道用户机器上 pnpm 把包装进了哪个 profile 的
+#   node_modules，所以声明式行里写不出 bridge 的绝对路径。
+#   因此由本插件的宿主半边用 import.meta.url 自行拉起 bridge 并说 MCP，
+#   再把 56 个 LR 工具注册成 mcp__lightroom__*。
+#   （详见 docs/DESIGN.md 的「LR 通道」一节。）
+- insert:
+    - id: shejing
+      name: 'dsh-shejing'

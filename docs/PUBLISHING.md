@@ -25,10 +25,15 @@ $NODE scripts/test.mjs
 # 真实批次的端到端回归（约 7 分钟，需要一份克隆出来的批次）
 DSH_HOME=$PWD/.dev/dsh-home $NODE scripts/regression.mjs <批次目录>
 
-# 打包检查：内容齐全、没有 node_modules 泄漏
-$NODE ~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/pnpm/bin/pnpm.cjs pack --pack-destination .dev
-tar -tzf .dev/dsh-shejing-*.tgz | head -20
+# 打包产物安装验证：把包真的装进一个全新 profile 再启动（约 60 秒，需要联网）
+$NODE scripts/test-packed-install.mjs
 ```
+
+**`test-packed-install.mjs` 是发布前的最后一道闸。** 其余所有测试跑的都是仓库里的
+**软链版**——路径长什么样、哪些文件真被打进包里、`import.meta.url` 在安装位置还对不对，
+这些只有真的装一遍才知道。它会：
+pack → `dsh plugin add` 进全新隔离 profile → 启动 → 核对工具数、桥接入口是否指向
+安装目录、`/api/shejing/probe` 是否通、客户端工件是否被正确提供。
 
 **桌面客户端的加载验证只能在发布之后做**——GUI 插件管理器只接受注册表上的包名，
 会拒绝本地路径。所以顺序是：先发一个预发布版本，装进桌面端，确认面板能加载，再发正式版。

@@ -7,6 +7,7 @@
  *   node scripts/test.mjs bridge     只跑 LR 通道（用假桥接）
  *   node scripts/test.mjs tools      只跑阶段工具（调色 / 归档 / 协议层失败）
  *   node scripts/test.mjs python     只跑 Python 侧（分组算法等）
+ *   node scripts/test.mjs packed     只跑打包产物安装验证（约 60 秒，需要联网装依赖）
  *
  * 需要 DSH_HOME 的两套（tools 与 regression）会写入该目录，别指向真实的 ~/.dsh。
  *
@@ -68,6 +69,13 @@ if (only === undefined || only === 'tools') {
     results.push(await run(process.execPath,
       [path.join(ROOT, 'scripts', 'test-tools-lr.mjs')], 'JS · 阶段工具（假桥接）'))
   }
+}
+
+if (only === 'packed') {
+  // 发布前的最后一道闸：把包真的装一遍再启动。默认不跑（耗时且要联网），
+  // 但发版前必须跑——其余测试用的都是仓库里的软链版。
+  results.push(await run(process.execPath,
+    [path.join(ROOT, 'scripts', 'test-packed-install.mjs')], 'JS · 打包产物安装'))
 }
 
 if (only === undefined || only === 'python') {

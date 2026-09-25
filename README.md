@@ -108,6 +108,7 @@ The suites are:
 | `test-bridge.mjs` | the LR channel: MCP handshake, image blocks, `success:false`, reconnect, clear errors — against a fake bridge |
 | `test-tools-lr.mjs` | the stage tools end to end against a fake bridge: what actually reaches the wire when grading, the curve-endpoint guard, the gate's ask → approve → whitelist cycle, the real export path (plan → gate → `export_photos` → count verification → `SUMMARY.md`), and that protocol-level `isError` becomes a failed call while a payload `success:false` is passed through for the model to judge |
 | `test_grouping.py` | the burst grouping algorithm must produce a *partition*, plus 200 randomized rounds |
+| `test-packed-install.mjs` | **the release gate**: packs the tarball, installs it into a fresh profile with `dsh plugin add`, boots it, and checks that the installed copy activates, that relative paths resolve inside the installed package (not the repo), and that the panel channel works |
 
 `scripts/regression.mjs` drives the real tool implementations against a cloned batch, so it covers
 parameter translation, path resolution and ledger writes — not just the Python scripts. It walks

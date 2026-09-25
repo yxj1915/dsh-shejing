@@ -87,6 +87,7 @@ if (only === undefined || only === 'python') {
     const suites = [
       ['test_grouping.py', 'Python · 分组算法'],
       ['test_split.py', 'Python · 剔除脚本'],
+      ['test_rename.py', 'Python · 重命名脚本'],
     ]
     for (const [file, label] of suites) {
       results.push(await run(python.command, [path.join(ROOT, 'tests', file)], label))

@@ -143,8 +143,11 @@ if (marker !== null) {
   // （shejing_retro → shejing_retro_RENAMED，那个工具在真实运行里就不存在了），
   // 而「个数 === 8」照样通过，smoke 与发布闸全绿。发布闸本该是「装出来的那份
   // 真的能用」的最后一关，所以它必须核对名字本身。
-  const EXPECTED_STAGE_TOOLS = ['shejing_batch_status', 'shejing_archive', 'shejing_checkup',
-    'shejing_cull', 'shejing_grade', 'shejing_organize', 'shejing_retro', 'shejing_verify']
+  // 两边都要排序再比。（这里踩过一次：只给 actual 排了序、期望数组没排，
+  // 于是断言**永远失败**——而我把那次失败当成了「变异被抓住」的证据，
+  // 假阳性让这个发布闸坏了整整九轮没人发现。断言两边形状必须对称。）
+  const EXPECTED_STAGE_TOOLS = ['shejing_archive', 'shejing_batch_status', 'shejing_checkup',
+    'shejing_cull', 'shejing_grade', 'shejing_organize', 'shejing_retro', 'shejing_verify'].sort()
   const actualStage = [...marker.stageTools].sort()
   step('八个阶段工具按名字全部注册（含 shejing_doctor 共九个摄鲸工具）',
     actualStage.length === EXPECTED_STAGE_TOOLS.length

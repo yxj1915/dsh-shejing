@@ -80,19 +80,42 @@ DSH_HOME=$PWD/.dev/dsh-home $NODE scripts/live-check.mjs
 
 ## 3. 桌面客户端验证
 
-1. 打开 DSH 桌面客户端 → 插件管理器 → Add → 填 `dsh-shejing@0.1.0-rc.1`
-2. **重启客户端**（客户端模块的元数据缓存到重启为止，刷新页面不够）
-3. 侧边栏应出现鲸鱼图标 +「摄鲸」；点进去有四个标签页
-4. 让模型调 `shejing_doctor`，确认 Lightroom 链路
+**发布成功之后立刻做这一步，顺序很重要**：先发预发布版，装上确认，再发正式版。
 
-若启动失败，回滚：
+### 3.1 发布后先验 registry 那条路（我来做）
+
+```bash
+node scripts/test-packed-install.mjs --registry
+```
+
+它复现的正是 GUI 插件管理器内部做的事（`pnpm add <包名> --save-exact`）：
+全新隔离 profile → 从 registry 装 → 启动 → 核对 65 个工具、桥接入口指向安装目录、
+`/api/shejing/probe` 通、客户端工件被正确提供。**这一步不过就别去点 GUI。**
+
+### 3.2 在桌面客户端里装（你来做，约 1 分钟）
+
+1. 打开 DSH 桌面客户端 → **插件管理器**
+2. **Add** → 填 `dsh-shejing`（要指定版本就填 `dsh-shejing@0.1.0`）
+3. **重启客户端** —— 客户端模块的元数据缓存到重启为止，刷新页面不够
+
+`desktop` profile 由 Electron 应用独占管理，CLI 会拒绝直接装它，所以这一步**只能
+走 GUI**。（这也是为什么必须先发一次 npm 包：GUI 只接受注册表上的包名，
+会拒绝 `file:` 与本地路径。）
+
+### 3.3 应该看到什么
+
+- 侧边栏出现**鲸鱼图标 +「摄鲸」**
+- 点进去有四个标签页：**批次 / 剔除审阅 / 精选清单 / 调色**
+- 让模型调 `shejing_doctor` —— 应报告 Lightroom 插件已同步、token 存在、端口在听
+- 让模型调 `mcp__lightroom__search_photos {"limit": 3}` —— 应返回真实照片
+
+### 3.4 出问题怎么回滚
 
 ```bash
 dsh plugin --profile desktop remove dsh-shejing
 ```
 
-（`desktop` profile 由 Electron 应用独占管理，CLI 会拒绝直接安装——所以桌面端**只能**
-走 GUI 的 Add 表单。真要手改，见 `~/.dsh/profiles/desktop/package.json`。）
+GUI 里点 Remove 也一样。真要手改，看 `~/.dsh/profiles/desktop/package.json`。
 
 ## 4. GitHub 仓库与正式版
 

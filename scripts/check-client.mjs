@@ -139,32 +139,111 @@ const fullBatch = {
   shootingLessons: [{ title: '逆光保护高光', body: '先包围曝光再合成。' }],
 }
 
+
+/*
+ * render() 对宿主元素产出的是 `{ host, props, children }`（不是 React 元素的
+ * `{type, props}` 形状）。下面两个辅助函数按**渲染后的形状**走树。
+ */
+
+/** 把渲染树里所有文本收集起来——用来断言「屏幕上真的有这些东西」。 */
+function collectText(node, out = []) {
+  if (node === null || node === undefined || node === false || node === true) return out
+  if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return out }
+  if (Array.isArray(node)) { for (const child of node) collectText(child, out); return out }
+  if (typeof node.host !== 'string') return out
+  collectText(node.children, out)
+  return out
+}
+
+/** 找出第一个满足条件的宿主元素，用来直接触发它的 onClick。 */
+function findHost(node, predicate) {
+  if (node === null || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findHost(child, predicate)
+      if (found !== null) return found
+    }
+    return null
+  }
+  if (typeof node.host !== 'string') return null
+  if (predicate(node)) return node
+  return findHost(node.children, predicate)
+}
+
 /* ---------------------------------------------------------------- 逐个渲染 */
 
 const cases = [
-  ['WhaleIcon (未选中)', T.WhaleIcon, { size: 20, active: false }],
-  ['WhaleIcon (选中)', T.WhaleIcon, { size: 20, active: true }],
-  ['App', T.App, {}],
-  ['BatchesTab (空)', T.BatchesTab, { list: [], batch: null, onSelect: () => {}, nonce: 1 }],
-  ['BatchesTab (有批次)', T.BatchesTab, { list: [{ id: '2026-09-25_regression', batchId: '2026-09-25_regression' }], batch: fullBatch, onSelect: () => {}, nonce: 1 }],
-  ['CullTab (空)', T.CullTab, { batch: null, marks: {}, onToggle: () => {}, nonce: 1 }],
-  ['CullTab (有组)', T.CullTab, { batch: fullBatch, marks: { 'b.ARW': false }, onToggle: () => {}, nonce: 1 }],
-  ['PicksTab (无归档)', T.PicksTab, { batch: emptyBatch }],
-  ['PicksTab (有归档)', T.PicksTab, { batch: fullBatch }],
-  ['GradeTab (无调色)', T.GradeTab, { batch: emptyBatch }],
-  ['GradeTab (有调色)', T.GradeTab, { batch: fullBatch }],
+  // 最后一项是「屏幕上必须出现这段字」——组件返回 null 或渲染成空都会失败。
+  ['WhaleIcon (未选中)', T.WhaleIcon, { size: 20, active: false }, undefined],
+  ['WhaleIcon (选中)', T.WhaleIcon, { size: 20, active: true }, undefined],
+  ['App', T.App, {}, '批次'],
+  ['BatchesTab (空)', T.BatchesTab, { list: [], batch: null, onSelect: () => {}, nonce: 1 }, '还没有批次'],
+  ['BatchesTab (有批次)', T.BatchesTab, { list: [{ id: '2026-09-25_regression' }], batch: fullBatch, onSelect: () => {}, nonce: 1 }, '源文件夹'],
+  ['CullTab (空)', T.CullTab, { batch: null, marks: {}, onToggle: () => {}, nonce: 1 }, '先在「批次」里选一个'],
+  ['CullTab (有组)', T.CullTab, { batch: fullBatch, marks: { 'b.ARW': false }, onToggle: () => {}, nonce: 1 }, 'a.ARW'],
+  ['PicksTab (无归档)', T.PicksTab, { batch: emptyBatch }, undefined],
+  ['PicksTab (有归档)', T.PicksTab, { batch: fullBatch }, 'a.ARW'],
+  ['GradeTab (无调色)', T.GradeTab, { batch: emptyBatch }, undefined],
+  ['GradeTab (有调色)', T.GradeTab, { batch: fullBatch }, 'A 暖调电影感'],
 ]
 
 let failed = 0
-for (const [label, component, props] of cases) {
+for (const [label, component, props, mustContain] of cases) {
   try {
     const tree = render(component(props), fakeReact)
-    assert.ok(tree !== undefined, '渲染返回了 undefined')
+    // 原来的断言是 `tree !== undefined`——而 render() 只可能返回 null / 字符串 /
+    // 数组 / 对象，**永远不会是 undefined**，所以那条断言恒真：一个组件直接
+    // `return null`（整个标签页渲染成空）照样通过。审计员用变异证明了这一点。
+    // 现在改为断言「屏幕上真的有这些字」，并且必须有宿主元素。
+    assert.notEqual(tree, null, '组件返回了 null（屏幕上什么都没有）')
+    const hosts = findHost(tree, () => true)
+    const text = collectText(tree).join(' ')
+    if (mustContain !== undefined) {
+      assert.ok(hosts !== null, '没有任何宿主元素')
+      assert.ok(text.includes(mustContain), `屏幕上没有「${mustContain}」，实际：${text.slice(0, 120)}`)
+    }
     console.log(`  ✅ ${label}`)
   } catch (error) {
     failed += 1
     console.error(`  ❌ ${label} → ${error && error.message ? error.message : error}`)
   }
+}
+
+/*
+ * 「留/剔」点击必须真的翻转。
+ *
+ * 这条是补一个真实发生过的 bug：组件里算出的 `!rejected` 恰好等于当前存储的
+ * keep，于是每次点击都存回同一个值——切换是**永久空操作**，而整个剔除审阅
+ * 面板看起来还是活的（上面那张「你标了 N 张要剔」的卡片列的是工具的默认建议，
+ * 不是用户的决定）。没有这条断言时，把 onToggle 接错线不会有任何测试失败。
+ */
+try {
+  const calls = []
+  const props = { batch: fullBatch, marks: {}, onToggle: (name, v) => calls.push([name, v]), nonce: 1 }
+  const tree = render(T.CullTab(props), fakeReact)
+  const frameA = findHost(tree, node => node.props?.title === '点击切换留/剔'
+    && collectText(node.children).some(t => t.startsWith('a.ARW')))
+  assert.ok(frameA !== null, '找不到 a.ARW 那一帧的可点击元素')
+  frameA.props.onClick()
+  // 语义：onToggle(name, X) = 「把 keep 设成 X」（App 的 setMarks 就是这么存的）。
+  // 默认建议保留的一帧，第一次点击必须传 **false**（keep=false，即改为剔）。
+  // 曾经传的是 !rejected，而它恰好等于当前的 keep —— 于是每次点击都存回原值，
+  // 切换是永久空操作。这里断言「传进去的值与当前 keep 相反」，正是那条防线。
+  assert.deepEqual(calls, [['a.ARW', false]],
+    '默认保留的一帧点一下应当把 keep 改成 false（改为剔）')
+
+  const calls2 = []
+  const props2 = { batch: fullBatch, marks: { 'a.ARW': false }, onToggle: (n, v) => calls2.push([n, v]), nonce: 1 }
+  const tree2 = render(T.CullTab(props2), fakeReact)
+  const frameA2 = findHost(tree2, node => node.props?.title === '点击切换留/剔'
+    && collectText(node.children).some(t => t.startsWith('a.ARW')))
+  frameA2.props.onClick()
+  assert.deepEqual(calls2, [['a.ARW', true]],
+    '已标为剔的一帧再点一下应当把 keep 改回 true（改为留）')
+  console.log('  ✅ CullTab 点击真的翻转留/剔')
+} catch (error) {
+  failed += 1
+  console.error(`  ❌ CullTab 点击翻转 → ${error && error.message ? error.message : error}`)
 }
 
 console.log()

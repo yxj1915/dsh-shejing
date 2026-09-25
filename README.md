@@ -106,7 +106,7 @@ The suites are:
 | `smoke.mjs --no-connection` | graceful activation when a service is missing |
 | `check-client.mjs` | actually renders every panel tab with a fake React (catches things `node --check` cannot) |
 | `test-bridge.mjs` | the LR channel: MCP handshake, image blocks, `success:false`, reconnect, clear errors — against a fake bridge |
-| `test-tools-lr.mjs` | the grading flow end to end against a fake bridge: what actually reaches the wire, the curve-endpoint guard, and the gate's ask → approve → whitelist cycle |
+| `test-tools-lr.mjs` | the stage tools end to end against a fake bridge: what actually reaches the wire when grading, the curve-endpoint guard, the gate's ask → approve → whitelist cycle, the real export path (plan → gate → `export_photos` → count verification → `SUMMARY.md`), and that protocol-level `isError` becomes a failed call while a payload `success:false` is passed through for the model to judge |
 | `test_grouping.py` | the burst grouping algorithm must produce a *partition*, plus 200 randomized rounds |
 
 `scripts/regression.mjs` drives the real tool implementations against a cloned batch, so it covers

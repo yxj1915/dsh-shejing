@@ -65,9 +65,18 @@ DSH_HOME=$PWD/.dev/dsh-home $NODE scripts/live-check.mjs
 `private: true` 必须去掉（npm 拒绝发布 private 包）。
 
 ```bash
-npm login                  # 或 npm adduser
-npm publish --tag next     # 预发布：不会占用 latest
+# 这台机器 PATH 上没有 node，prepublishOnly 需要它 —— 脚本里已经包好了。
+# 发布必须有 2FA 验证码（registry 的规则：验证码，或带 bypass-2FA 的 token）。
+
+./scripts/publish.sh <6位验证码>        # 码已经在你手里时用这条
+./scripts/publish.sh                    # 在终端里跑，让 pnpm 自己提示验证码
 ```
+
+验证码 30 秒过期，过期了重跑一次即可（registry 不会因为过期码记一笔）。
+
+发布凭据在这台机器上的位置：`~/Library/Preferences/pnpm/auth.ini`，
+键为 `//registry.npmjs.org/:_authToken`。那是 `pnpm login` 的网页登录会话 token，
+**不足以发布**——发布仍需现场验证码。
 
 ## 3. 桌面客户端验证
 

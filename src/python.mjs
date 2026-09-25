@@ -7,7 +7,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readdir, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,13 +16,45 @@ import { fileURLToPath } from 'node:url'
 /** 包内 `python/` 目录。 */
 export const PYTHON_DIR = fileURLToPath(new URL('../python/', import.meta.url))
 
+/**
+ * 这个候选解释器能不能用。
+ *
+ * 两种写法都要认：
+ *   · 路径（绝对或带分隔符）——存在、是文件、**且有可执行位**
+ *   · 裸命令名（如 `python3`）——到 PATH 上找
+ *
+ * 原来只做 `stat(target).isFile()`，两个后果都在 CI 上炸过：
+ *   1. `SHEJING_PYTHON=python` 这类**裸命令名**被当成相对路径，永远找不到——
+ *      而工具自己的报错信息里写的就是「用 SHEJING_PYTHON 指定解释器」，
+ *      用户自然会填命令名。CI 第一次跑就是这样挂的。
+ *   2. 不检查可执行位，选出一个没有 x 位的文件，直到 spawn 才失败——
+ *      那时错误信息已经离原因很远了。
+ */
 async function isExecutable(target) {
-  try {
-    const info = await stat(target)
-    return info.isFile()
-  } catch {
-    return false
+  const looksLikePath = path.isAbsolute(target) || target.includes(path.sep)
+  if (looksLikePath) {
+    try {
+      const info = await stat(target)
+      if (!info.isFile()) return false
+      await access(target, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
   }
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (dir === '') continue
+    const full = path.join(dir, target)
+    try {
+      const info = await stat(full)
+      if (!info.isFile()) continue
+      await access(full, constants.X_OK)
+      return true
+    } catch {
+      // 这个目录里没有，继续找
+    }
+  }
+  return false
 }
 
 function dshHome() {

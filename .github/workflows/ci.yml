@@ -1,10 +1,10 @@
 name: CI
 
-# 跑六套测试里不需要真机、也不需要 DSH 运行时的那部分。
+# 跑测试里不需要真机、也不需要「从 app.asar 抽出来的 DSH 运行时」的那部分。
 #
 # 不跑的两类（见 README 的测试表）：
-#   · scripts/regression.mjs        需要一份真实的照片批次，不适合放 CI
-#   · scripts/test-packed-install.mjs 需要从 app.asar 抽出的 DSH 运行时（不可分发）
+#   · scripts/regression.mjs          需要一份真实的照片批次，不适合放 CI
+#   · scripts/test-packed-install.mjs 需要不可分发的 DSH 运行时
 # 那两类是**发布前手动跑**的闸门，见 docs/PUBLISHING.md。
 
 on:
@@ -28,21 +28,56 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: 安装依赖
+      # 摄鲸的 Python 脚本要 Pillow 与 numpy（体检解码、缩略图、清晰度）。
+      #
+      # 这一条是**第一次 CI 跑起来才发现的**：src/python.mjs 的解析顺序是
+      #   SHEJING_PYTHON → DSH 自带运行时目录 → PATH 上的 python3
+      # 而「DSH 自带运行时」在 GitHub runner 上当然不存在，于是归档那一步
+      # （它要跑 40_summary.py）直接抛错，连带四个 Python 测试套件全挂。
+      # 本地永远看不到这个问题——本地那台机器上运行时就在那儿。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 Python 依赖
+        run: python -m pip install --upgrade pip pillow numpy
+
+      - name: 安装 Node 依赖
         run: pnpm install --frozen-lockfile
 
       - name: 构建浏览器半边
         run: node scripts/build-client.mjs
 
-      - name: 六套测试
+      # 构建产物必须与提交内容一致。
+      # 原先这一步只是「跑一遍构建」，而构建会**静默重写** lib/client.js——
+      # 也就是说：改了 src/client/index.js 却忘了重新构建，CI 照样绿，
+      # 而任何从 git 装包的人拿到的是过期的浏览器半边。
+      - name: 构建产物不得与提交内容不一致
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::构建产物与提交内容不一致——请本地跑 scripts/build-client.mjs 后提交"
+            git status --porcelain
+            exit 1
+          fi
+
+      - name: 跑测试
         env:
-          # 两套需要 DSH_HOME 的测试会往这里写，绝不指向真实的 ~/.dsh
+          # 需要 DSH_HOME 的测试会往这里写，绝不指向真实的 ~/.dsh
           DSH_HOME: ${{ runner.temp }}/shejing-home
+          # 明确指定解释器，走 resolvePython 的第一优先级
+          SHEJING_PYTHON: python
         run: |
           mkdir -p "$DSH_HOME"
           node scripts/test.mjs
 
       - name: 校验打包内容
         run: |
-          node scripts/build-client.mjs
-          npm pack --dry-run 2>&1 | tail -20
+          npm pack --dry-run > /tmp/pack.txt 2>&1 || { cat /tmp/pack.txt; exit 1; }
+          grep -q "lib/client.js" /tmp/pack.txt || { echo "::error::包里缺 lib/client.js"; exit 1; }
+          grep -q "cordis.patch.yml" /tmp/pack.txt || { echo "::error::包里缺 cordis.patch.yml"; exit 1; }
+          grep -q "skills/shejing/SKILL.md" /tmp/pack.txt || { echo "::error::包里缺 skill"; exit 1; }
+          if grep -q "__pycache__\|\.pyc" /tmp/pack.txt; then
+            echo "::error::包里混进了 Python 字节码缓存"; exit 1
+          fi
+          echo "打包内容检查通过"
+          tail -5 /tmp/pack.txt

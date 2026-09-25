@@ -118,26 +118,132 @@ const post = ctx.handlers.get('tools/post-execute') ?? []
 assert.ok(post.length > 0, '门禁应当注册 tools/post-execute 钩子用于记账')
 const allow = async () => ({ kind: 'allow' })
 
-const batchCall = {
-  name: 'mcp__lightroom__set_develop_settings',
-  arguments: { photo_ids: ['a', 'b', 'c'], settings: { Exposure2012: 0.5 } },
+/*
+ * 参数必须从**工具自己的契约**造出来，并用契约自己的 JSON Schema 校验。
+ *
+ * 这里踩过一次大坑，值得写在测试里：原先给 `set_develop_settings` 传的是
+ * `photo_ids: ['a','b','c']`，而它的真实 schema 是**单数** `photo_id` 且
+ * `additionalProperties: false` —— 真实工具会在 schema 层就拒掉那个参数。
+ * 于是那条断言测的是一个**不可能发生的输入**，而真实路径上门禁一次都没触发过：
+ * 模型只要逐张调 `set_develop_settings`，就能把一套没验证过的参数刷满整批。
+ *
+ * 现在参数由 schema 生成、再由 schema 校验，测试不可能再漂到真实形状之外。
+ */
+const { TOOL_CONTRACTS } = await import('../lrbridge/dist/tool-contracts.js')
+const { default: Ajv } = await import('ajv')
+const ajv = new Ajv({ strict: false, allowUnionTypes: true, validateFormats: false })
+
+function sampleFor(schema) {
+  if (schema === undefined || schema === null) return 'x'
+  if (schema.oneOf !== undefined || schema.anyOf !== undefined) {
+    return sampleFor((schema.oneOf ?? schema.anyOf)[0])
+  }
+  if (schema.enum !== undefined) return schema.enum[0]
+  if (schema.const !== undefined) return schema.const
+  if (schema.type === 'number' || schema.type === 'integer') return schema.minimum ?? 1
+  if (schema.type === 'boolean') return true
+  if (schema.type === 'array') return [sampleFor(schema.items)]
+  if (schema.type === 'object') {
+    const props = schema.properties ?? {}
+    const out = {}
+    for (const [key, value] of Object.entries(props)) {
+      if ((schema.required ?? []).includes(key)) out[key] = sampleFor(value)
+    }
+    // 有的 schema 用 minProperties 而不是 required 来要求「至少写一个参数」
+    // （`set_develop_settings.settings` 就是），空对象会被拒。
+    const min = schema.minProperties ?? 0
+    for (const [key, value] of Object.entries(props)) {
+      if (Object.keys(out).length >= min) break
+      if (out[key] === undefined) out[key] = sampleFor(value)
+    }
+    return out
+  }
+  return 'x'
 }
-const asked = await gate(batchCall, allow)
-console.log('门禁·批量新参数      →', asked.kind)
-assert.equal(asked.kind, 'ask', '批量的新参数组合必须被拦下问用户')
 
-const singleCall = {
-  name: 'mcp__lightroom__set_develop_settings',
-  arguments: { photo_id: 'a', settings: { Exposure2012: 0.5 } },
+/** 按 rawTool 的真实 inputSchema 造一份合法参数；照片身份字段填 photoValues。 */
+function lrArgs(rawTool, photoValues) {
+  const contract = TOOL_CONTRACTS.find(t => t.name === rawTool)
+  assert.ok(contract !== undefined, `找不到工具契约：${rawTool}`)
+  const schema = contract.inputSchema
+  const validate = ajv.compile(schema)
+
+  const base = {}
+  for (const [key, value] of Object.entries(schema.properties ?? {})) {
+    if (key === 'photo_id' || key === 'source_id') base[key] = photoValues[0]
+    else if (key === 'photo_ids' || key === 'target_ids') base[key] = [...photoValues]
+    else if ((schema.required ?? []).includes(key)) base[key] = sampleFor(value)
+  }
+
+  // 顶层 anyOf/oneOf 表示「这几组字段里满足一组就行」（`set_tone_curve` 就是
+  // points 与 preset 二选一）。依次尝试各分支、补上它 required 的字段，
+  // 取第一个能通过校验的——这样测试参数永远落在契约允许的形状里。
+  const branches = schema.anyOf ?? schema.oneOf ?? []
+  const candidates = branches.length === 0 ? [base] : branches.map((branch) => {
+    const candidate = { ...base }
+    for (const key of branch.required ?? []) {
+      if (candidate[key] === undefined && schema.properties?.[key] !== undefined) {
+        candidate[key] = sampleFor(schema.properties[key])
+      }
+    }
+    return candidate
+  })
+
+  for (const candidate of candidates) {
+    if (validate(candidate)) return candidate
+  }
+  assert.fail(
+    `${rawTool} 的测试参数不符合它自己的 schema：${JSON.stringify(validate.errors)}\n`
+    + `  试过的参数：${JSON.stringify(candidates)}`)
 }
-console.log('门禁·单张            →', (await gate(singleCall, allow)).kind)
-assert.equal((await gate(singleCall, allow)).kind, 'allow', '单张调用不该被拦（那正是「先行」本身）')
 
-const readOnly = { name: 'mcp__lightroom__search_photos', arguments: { limit: 50 } }
-assert.equal((await gate(readOnly, allow)).kind, 'allow', '只读工具不该被拦')
+const lrCall = (rawTool, photoValues) => ({
+  name: `mcp__lightroom__${rawTool}`,
+  arguments: lrArgs(rawTool, photoValues),
+})
 
-const marking = { name: 'mcp__lightroom__set_rating', arguments: { photo_ids: ['a', 'b'], rating: 5 } }
-assert.equal((await gate(marking, allow)).kind, 'allow', '星级属于标记门禁，不是参数门禁')
+/*
+ * 受管工具逐个验。关键在第二条断言：**同一套参数用到第二张不同照片时必须拦**，
+ * 哪怕它是分两次调用、每次只带一张。那正是上面说的那个漏洞：
+ * `set_develop_settings` / `set_tone_curve` 的 schema 是单数 `photo_id`，
+ * 按「本次调用有几张」计数的话它们永远算 1 张，门禁形同虚设。
+ */
+const PARAM_GATED = [
+  'set_develop_settings', 'set_tone_curve', 'set_white_balance', 'apply_develop_preset',
+  'copy_develop_settings', 'apply_auto', 'set_noise_reduction', 'ai_denoise',
+]
+for (const rawTool of PARAM_GATED) {
+  const first = await gate(lrCall(rawTool, ['photo-1']), allow)
+  assert.equal(first.kind, 'allow', `${rawTool}：第一张应当放行（那正是「单张先行」本身）`)
+  const second = await gate(lrCall(rawTool, ['photo-2']), allow)
+  assert.equal(second.kind, 'ask',
+    `${rawTool}：同一套参数用到第二张照片必须拦（逐张调用绕过门禁的漏洞）`)
+  console.log(`门禁·${rawTool.padEnd(22)} → 第 1 张 allow，第 2 张 ask`)
+}
+
+// 一次调用带多张：立即拦（这是原实现唯一能拦住的形态，不能因为改了判定就丢掉）
+const multi = await gate(lrCall('apply_auto', ['m1', 'm2', 'm3']), allow)
+assert.equal(multi.kind, 'ask', '一次调用带 3 张必须立即拦')
+console.log('门禁·一次带多张        → ask')
+
+// 只拦参数写入。只读工具、以及可逆标记类工具都不该被参数门禁拦。
+assert.equal((await gate({ name: 'mcp__lightroom__search_photos', arguments: { limit: 50 } }, allow)).kind, 'allow',
+  '只读工具不该被拦')
+assert.equal((await gate(lrCall('set_rating', ['a', 'b']), allow)).kind, 'allow',
+  '星级属于标记门禁，不是参数门禁')
+
+// 被拦下但**没执行**时不能进白名单——否则「问一次就永久放行」。
+await gate(lrCall('apply_develop_preset', ['n1']), allow)
+assert.equal((await gate(lrCall('apply_develop_preset', ['n2']), allow)).kind, 'ask',
+  '只是被拦下、尚未执行时不能进白名单')
+
+// 用户同意 → post-execute 记账 → 同一套参数之后不再拦（白名单）
+const wlAsk = lrCall('set_noise_reduction', ['w2'])
+assert.equal((await gate(wlAsk, allow)).kind, 'ask', '白名单前置：应当先被拦一次')
+await post[0](wlAsk, { ok: true }, allow)
+const wlAgain = await gate(lrCall('set_noise_reduction', ['w3']), allow)
+assert.equal(wlAgain.kind, 'allow', '已入白名单的参数不该再拦')
+console.log('门禁·白名单生效        → allow')
 
 const cullConfirm = { name: 'shejing_cull', arguments: { reject: ['x.ARW', 'y.ARW'], confirm: true } }
 console.log('门禁·剔除(confirm)   →', (await gate(cullConfirm, allow)).kind)
@@ -147,16 +253,24 @@ const cullDry = { name: 'shejing_cull', arguments: { reject: ['x.ARW'] } }
 assert.equal((await gate(cullDry, allow)).kind, 'allow', '剔除预演不该被拦（那一趟本来就是给用户看的）')
 
 // shejing_grade 内部直接调桥接、不走 DSH 工具，所以钩子必须专门认它，
-// 否则它就是 Q29 要堵的那条旁路。
-const gradeBatch = { name: 'shejing_grade', arguments: { photo_ids: ['a', 'b', 'c'], style: 'A' } }
+// 否则它就是 Q29 要堵的那条旁路。顺序按真实用法：先单张（先行），再整批。
+const gradeSingle = { name: 'shejing_grade', arguments: { photo_ids: ['g1'], style: 'A' } }
+console.log('门禁·调色单张        →', (await gate(gradeSingle, allow)).kind)
+assert.equal((await gate(gradeSingle, allow)).kind, 'allow', '单张调色不该被拦（那正是「先行」本身）')
+
+const gradeBatch = { name: 'shejing_grade', arguments: { photo_ids: ['g1', 'g2', 'g3'], style: 'A' } }
 const gradeAsked = await gate(gradeBatch, allow)
 console.log('门禁·调色批量        →', gradeAsked.kind)
 assert.equal(gradeAsked.kind, 'ask', '批量调色必须被拦下')
 assert.ok(String(gradeAsked.reason).includes('没有'), '理由里应当说明缺少单张渲染记录')
 
-const gradeSingle = { name: 'shejing_grade', arguments: { photo_ids: ['a'], style: 'A' } }
-console.log('门禁·调色单张        →', (await gate(gradeSingle, allow)).kind)
-assert.equal((await gate(gradeSingle, allow)).kind, 'allow', '单张调色不该被拦（那正是「先行」本身）')
+// 逐张调用同样拦得住——只看 photo_ids.length 的话这里会漏（和 bridge 工具同一个洞）
+assert.equal((await gate({ name: 'shejing_grade', arguments: { photo_ids: ['g9'], style: 'A' } }, allow)).kind,
+  'ask', '同一套参数换成另一张照片也必须拦（逐张调用绕不过去）')
+
+// 换一套全新参数则重新从「单张先行」开始
+assert.equal((await gate({ name: 'shejing_grade', arguments: { photo_ids: ['h1'], style: 'B' } }, allow)).kind,
+  'allow', '换一套新参数时第一张仍应放行')
 
 const gradeUnknownStyle = { name: 'shejing_grade', arguments: { photo_ids: ['a', 'b'], style: 'X' } }
 let threw = false
@@ -178,12 +292,6 @@ assert.equal((await gate({ name: 'shejing_archive', arguments: {} }, allow)).kin
 console.log('门禁·复盘(confirm)   →', (await gate({ name: 'shejing_retro', arguments: { title: 't', body: 'b', confirm: true } }, allow)).kind)
 assert.equal((await gate({ name: 'shejing_retro', arguments: { title: 't', body: 'b', confirm: true } }, allow)).kind, 'ask',
   '往规则文件里写东西必须问用户')
-
-// 用户同意 → post-execute 记账 → 同一套参数第二次不再拦（白名单）
-await post[0](batchCall, { ok: true }, allow)
-const again = await gate(batchCall, allow)
-console.log('门禁·同参数第二次    →', again.kind)
-assert.equal(again.kind, 'allow', '已入白名单的参数不该再拦')
 
 // --- 面板路由 ---
 if (noConnection) {

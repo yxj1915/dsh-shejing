@@ -59,6 +59,16 @@ export function approvedParamsFile() {
   return path.join(SHEJING_HOME, 'gates', 'approved-params.json')
 }
 
+/**
+ * 照片身份字段。
+ *
+ * 指纹要**剥掉**它们，门禁跟踪要**用**它们。两份名单必须一致——只剥
+ * `photo_id`/`photo_ids` 是不够的：`copy_develop_settings` 用的是
+ * `source_id`/`target_ids`，漏掉它们会让同一套参数因目标集合不同而得到不同指纹，
+ * 白名单永远命中不了。
+ */
+const PHOTO_ID_FIELDS = ['photo_id', 'photo_ids', 'source_id', 'target_ids']
+
 /** 稳定序列化：键排序，保证同一套参数永远得到同一个指纹。 */
 function canonical(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -67,19 +77,76 @@ function canonical(value) {
   return `{${keys.map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`
 }
 
-/** 参数指纹：只取参数，不含照片 id，也不含工具名以外的上下文。 */
+/** 参数指纹：只取参数，不含照片身份，也不含工具名以外的上下文。 */
 export function fingerprintParams(rawTool, args) {
-  const { photo_id: _p, photo_ids: _ps, ...params } = args ?? {}
+  const params = { ...(args ?? {}) }
+  for (const field of PHOTO_ID_FIELDS) delete params[field]
   return createHash('sha256').update(`${rawTool}\u0000${canonical(params)}`).digest('hex').slice(0, 16)
 }
 
-/** 从工具参数里取出被作用的照片数量。 */
-export function affectedPhotoCount(args) {
-  const { photo_ids: ids, photo_id: one, source_path: source } = args ?? {}
-  if (Array.isArray(ids)) return ids.length
-  if (one !== undefined) return 1
-  if (source !== undefined) return 2 // import_photos 是批量语义
-  return 0
+/**
+ * 从参数里取出被作用的照片身份（去重后的字符串数组）。
+ *
+ * **这里原来是错的，而且是这个插件最严重的一个漏洞。** 原先按「这一次调用带了几张」
+ * 计数（`affectedPhotoCount`），遇到 `photo_id`（单数）一律算 1 张，于是
+ * `set_develop_settings` 与 `set_tone_curve`——两个真正写调色参数的工具——**永远
+ * 绕开门禁**：模型只要逐张调用，就能把一套没做过单张验证的参数刷满整批。那正是
+ * 紫色事故的形态（25 张染紫），而门禁本该防的就是它。
+ *
+ * 漏掉的不止它们：`copy_develop_settings` 的照片在 `target_ids` 里，原实现连数
+ * 都数不出来（返回 0）。八个受管工具里只有五个真的拦得住。
+ *
+ * 更糟的是**测试没抓到**：冒烟测试给 `set_develop_settings` 传的是
+ * `photo_ids: ['a','b','c']`，而它的真实 schema 是单数 `photo_id` 且
+ * `additionalProperties: false`——真实工具会在 schema 层就拒掉那个参数。
+ * 那条断言测的是一个不可能发生的输入。
+ */
+export function photoKeys(args) {
+  const out = []
+  const push = (value) => {
+    if (typeof value === 'string' && value !== '') out.push(value)
+    else if (typeof value === 'number') out.push(String(value))
+  }
+  const a = args ?? {}
+  for (const field of ['photo_ids', 'target_ids']) {
+    if (Array.isArray(a[field])) a[field].forEach(push)
+    else push(a[field])
+  }
+  push(a.photo_id)
+  push(a.source_id)
+  return [...new Set(out)]
+}
+
+/**
+ * 「同一套参数累计碰过几张**不同**照片」的会话内记录。
+ *
+ * 为什么必须累计而不是只看单次调用：门禁要防的是「一套没验证过的参数铺满一批」，
+ * 而铺满一批有两种形态——一次调用带 N 张，或者 **N 次调用各带一张**。后者才是更
+ * 自然的做法，因为 `set_develop_settings` 的 schema 就是单数 `photo_id`。
+ *
+ * 语义正好落在需要的地方：第一张放行（那正是「单张先行」本身），第二张起拦截
+ * （那已经是批量了）。用户同意后指纹进白名单，后续不再拦。
+ *
+ * 只存内存：会话重启后计数归零，最坏情况是「多放行一张」，第二张仍会被拦，
+ * 保护不失效。落盘会让每次调用都写一次文件，代价与损坏风险都不值。
+ */
+export class PhotoTracker {
+  #touched = new Map()
+
+  /** 记下这批照片，返回该指纹累计碰过的不同照片数。 */
+  add(fingerprint, keys) {
+    let set = this.#touched.get(fingerprint)
+    if (set === undefined) {
+      set = new Set()
+      this.#touched.set(fingerprint, set)
+    }
+    for (const key of keys) set.add(key)
+    return set.size
+  }
+
+  sizeOf(fingerprint) {
+    return this.#touched.get(fingerprint)?.size ?? 0
+  }
 }
 
 export function rawToolName(toolName) {
@@ -142,17 +209,24 @@ export class GateLedger {
 
 /**
  * 判定一次调用是否撞上「新参数门禁」。
+ *
+ * 判定依据是**同一套参数累计碰过的不同照片数**，不是这一次调用带了几张——
+ * 详见 `photoKeys` 与 `PhotoTracker` 的注释（那正是原先的漏洞所在）。
+ *
  * @returns {null | {fingerprint:string, rawTool:string, photos:number, summary:string}}
  */
-export async function checkParamGate(ledger, toolName, args) {
+export async function checkParamGate(ledger, tracker, toolName, args) {
   const rawTool = rawToolName(toolName)
   if (!PARAM_GATED_TOOLS.has(rawTool)) return null
 
-  const photos = affectedPhotoCount(args)
-  if (photos < 2) return null // 单张正是「先行」本身
-
   const fingerprint = fingerprintParams(rawTool, args)
   if (await ledger.isApproved(fingerprint)) return null
+
+  const keys = photoKeys(args)
+  // 认不出照片身份时**保守拦截**（宁可多问一次）。受管工具都有身份字段，
+  // 正常走不到这条分支；留着是为了「一条认不出的路径绝不静默放行」。
+  const photos = keys.length === 0 ? Number.POSITIVE_INFINITY : tracker.add(fingerprint, keys)
+  if (photos < 2) return null // 第一张正是「单张先行」那一步本身
 
   return {
     fingerprint,
@@ -174,6 +248,7 @@ export function summarizeParams(rawTool, args) {
 /** 把门禁挂到 tools 钩子上。 */
 export function registerGate(ctx, { log = () => {} } = {}) {
   const ledger = new GateLedger()
+  const tracker = new PhotoTracker()
   const seen = new Map() // exec → 本次调用的门禁描述，供 post-execute 记账
 
   ctx.effect(() => ctx.on('tools/pre-execute', async (exec, next) => {
@@ -229,14 +304,18 @@ export function registerGate(ctx, { log = () => {} } = {}) {
 
     // 调色门禁：shejing_grade 内部直接调桥接（不走 DSH 工具），所以钩子必须
     // 专门认它——否则它就是 Q29 要堵的那条旁路。
+    //
+    // 这里也走**累计跟踪**，不能只看 `photo_ids.length >= 2`：那样逐张调用
+    // （每次只带一张）同样绕得过去——和 bridge 工具那边是同一个洞，只是换了个入口。
     if (exec.name === 'shejing_grade') {
-      const photos = Array.isArray(args.photo_ids) ? args.photo_ids.length : 0
-      if (photos >= 2) {
-        const resolved = resolveGrade(args)
-        // 指纹只算**参数**（settings + curves），不含照片 id，也不含 label/notes。
-        // 工具那边记录时用的是同一个 params，两边必须一致。
-        const fingerprint = fingerprintParams('shejing_grade', resolved.params)
-        if (!(await ledger.isApproved(fingerprint))) {
+      const ids = Array.isArray(args.photo_ids) ? args.photo_ids.map(v => String(v)) : []
+      const resolved = resolveGrade(args) // 未知风格在这里就抛，不会写了一半才炸
+      // 指纹只算**参数**（settings + curves），不含照片 id，也不含 label/notes。
+      // 工具那边记录时用的是同一个 params，两边必须一致。
+      const fingerprint = fingerprintParams('shejing_grade', resolved.params)
+      if (!(await ledger.isApproved(fingerprint))) {
+        const photos = ids.length === 0 ? Number.POSITIVE_INFINITY : tracker.add(fingerprint, ids)
+        if (photos >= 2) {
           const rendered = await ledger.renderedInfo(fingerprint)
           const evidence = rendered === null
             ? '⚠️ 账本里**没有**这一套参数的单张渲染记录。'
@@ -254,17 +333,20 @@ export function registerGate(ctx, { log = () => {} } = {}) {
       }
     }
 
-    const gate = await checkParamGate(ledger, exec.name, exec.arguments)
+    const gate = await checkParamGate(ledger, tracker, exec.name, exec.arguments)
     if (gate === null) return next()
 
-    // 已经通过钩子放行的调用会在 post-execute 里记账；这里再次放行时
-    // 说明白名单命中了（checkParamGate 已返回 null），所以走到这里就是新参数。
+    // 已经通过钩子放行会在 post-execute 里记账；这里再次放行说明白名单命中了
+    // （checkParamGate 已返回 null），所以走到这里就是新参数。
     seen.set(exec, gate)
-    log(`[shejing] 门禁拦截 ${gate.rawTool} × ${gate.photos} 张，指纹 ${gate.fingerprint}`)
+    const howMany = Number.isFinite(gate.photos)
+      ? `${gate.photos} 张照片`
+      : '数量不明的照片（认不出参数里的照片身份，按保守处理）'
+    log(`[shejing] 门禁拦截 ${gate.rawTool} × ${gate.photos}，指纹 ${gate.fingerprint}`)
     return {
       kind: 'ask',
       reason:
-        `摄鲸·新参数门禁：${gate.summary} 将应用到 ${gate.photos} 张照片，`
+        `摄鲸·新参数门禁：${gate.summary} 将应用到 ${howMany}，`
         + `但这一套参数（指纹 ${gate.fingerprint}）还没有做过单张验证。\n`
         + '请确认你**看过**它在单张上的渲染结果再同意；同意后这一套参数会进白名单，'
         + '以后同样的参数不再拦。',
@@ -275,7 +357,12 @@ export function registerGate(ctx, { log = () => {} } = {}) {
     const gate = seen.get(exec)
     if (gate !== undefined) {
       seen.delete(exec)
-      await ledger.approve(gate.fingerprint, { tool: gate.rawTool, summary: gate.summary, photos: gate.photos })
+      await ledger.approve(gate.fingerprint, {
+        tool: gate.rawTool,
+        summary: gate.summary,
+        // Infinity 序列化成 null 会污染账本，这里落成 null 之外的明确值
+        photos: Number.isFinite(gate.photos) ? gate.photos : null,
+      })
       log(`[shejing] 参数已入白名单：${gate.fingerprint}`)
     }
     return next()

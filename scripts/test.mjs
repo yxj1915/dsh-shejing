@@ -3,6 +3,7 @@
  *
  *   node scripts/test.mjs            跑全部
  *   node scripts/test.mjs smoke      只跑插件注册面与门禁
+ *   node scripts/test.mjs client     只跑浏览器半边的构建与渲染检查
  *   node scripts/test.mjs python     只跑 Python 侧（分组算法等）
  *
  * 端到端回归（scripts/regression.mjs）不在这里跑——它要十几分钟并且需要一份
@@ -35,6 +36,16 @@ const results = []
 
 if (only === undefined || only === 'smoke') {
   results.push(await run(process.execPath, [path.join(ROOT, 'scripts', 'smoke.mjs')], 'JS · 插件注册面与门禁'))
+}
+
+if (only === undefined || only === 'client') {
+  // 先确保工件是最新的，否则检查的是旧产物。
+  const built = await run(process.execPath, [path.join(ROOT, 'scripts', 'build-client.mjs')], 'JS · 构建浏览器半边')
+  if (built.code === 0) {
+    results.push(await run(process.execPath, [path.join(ROOT, 'scripts', 'check-client.mjs')], 'JS · 浏览器半边渲染'))
+  } else {
+    results.push({ label: 'JS · 浏览器半边渲染', code: 1 })
+  }
 }
 
 if (only === undefined || only === 'python') {

@@ -78,6 +78,23 @@ function batchSummary(manifest) {
     sharpnessOutliers: Array.isArray(checkup.sharpness_outliers) ? checkup.sharpness_outliers : [],
     cull: stages.cull ?? null,
     archive: stages.archive ?? null,
+    // 调色对比面板需要：风格与参数、以及每张渲染出的「之后」图。
+    // 「之前」的图直接用 checkup 的大图，所以面板不需要额外数据源。
+    grade: stages.grade === undefined ? null : {
+      at: stages.grade.at ?? null,
+      label: stages.grade.label ?? null,
+      fingerprint: stages.grade.fingerprint ?? null,
+      style: stages.grade.style ?? null,
+      single: stages.grade.single === true,
+      notes: Array.isArray(stages.grade.notes) ? stages.grade.notes : [],
+      renders: (Array.isArray(stages.grade.renders) ? stages.grade.renders : []).map(render => ({
+        id: render.id,
+        preview: render.preview ?? null,
+        // photo_id 可能是文件名、绝对路径或数字目录 id；账本里的键是文件名。
+        before: frames[path.basename(String(render.id))]?.big ?? null,
+        at: render.at ?? null,
+      })),
+    },
     decisions: Array.isArray(manifest?.decisions) ? manifest.decisions : [],
     shootingLessons: Array.isArray(manifest?.shooting_lessons) ? manifest.shooting_lessons : [],
   }

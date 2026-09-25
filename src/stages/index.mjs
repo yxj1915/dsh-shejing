@@ -251,6 +251,8 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
           type: 'array', items: { type: 'string' },
           description: '照片标识：数字目录 id、文件名或绝对路径均可。只传 1 个即「单张先行」。',
         },
+        batch_id: { type: 'string', description: '批次目录名；给了就把本次渲染记进批次账本，面板才能做前后对比。' },
+        source: { type: 'string', description: '源照片文件夹（与 batch_id 二选一）。' },
         style: { type: 'string', enum: ['A', 'B', 'C'], description: '内置风格。' },
         settings: {
           type: 'object',
@@ -311,6 +313,35 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
         await ledger.markRendered(fingerprint, {
           photoId: ids[0], previewPath: previews[0].path, size, label: resolved.label,
         })
+      }
+
+      // 记进批次账本：面板的「调色对比」需要知道每张的渲染结果落在哪。
+      // 没有 batch_id / source 就跳过——单张先行时常常还不知道属于哪个批次。
+      if (previews.length > 0) {
+        try {
+          const { batchDir, manifest } = await resolveBatch(args)
+          if (manifest !== null) {
+            const stages = { ...(manifest.stages ?? {}) }
+            const at = new Date().toISOString().replace('T', ' ').slice(0, 19)
+            const previous = Array.isArray(stages.grade?.renders) ? stages.grade.renders : []
+            const byId = new Map(previous.map(r => [r.id, r]))
+            for (const p of previews) byId.set(p.id, { id: p.id, preview: p.path, at })
+            stages.grade = {
+              status: 'done', at,
+              label: resolved.label, fingerprint,
+              style: args.style ?? null,
+              single,
+              settings: resolved.settings,
+              curves: resolved.curves,
+              notes: resolved.notes,
+              renders: [...byId.values()],
+            }
+            await writeManifest(batchDir, { ...manifest, stages, updated: at })
+            lines.push('', `  账本：${path.join(batchDir, 'manifest.json')}`)
+          }
+        } catch (error) {
+          lines.push('', `  ⚠️ 写账本失败（不影响调色结果）：${error?.message ?? error}`)
+        }
       }
 
       lines.push('', '② 建议')

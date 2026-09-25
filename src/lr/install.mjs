@@ -32,6 +32,15 @@ export const SHEJING_HOME = path.join(dshHome(), 'shejing')
 
 /** Lightroom 的 Modules 目录（与 bridge 的 install-plugin.js 保持一致）。 */
 export function lightroomModulesDir() {
+  // 允许用环境变量覆盖，**为了测试能在隔离目录里跑**。
+  //
+  // 不这么做的话，测试只能看到「已是最新」那条空转路径——本机插件本来就装好了。
+  // 审计员的变异 21 证明了后果：把 syncLrplugin 改成永远返回 'current'，
+  // 测试全绿；而 DESIGN 说这个文件存在的全部理由正是「比对、备份、更新」这三条
+  // 分支。用一个临时 HOME 去测也不安全——万一 homedir() 没跟着变，
+  // 测试就会覆盖用户真实的 Lightroom 插件。
+  const override = process.env.SHEJING_LR_MODULES_DIR
+  if (override !== undefined && override !== '') return override
   if (process.platform === 'darwin') {
     return path.join(homedir(), 'Library', 'Application Support', 'Adobe', 'Lightroom', 'Modules')
   }

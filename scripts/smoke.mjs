@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -445,13 +446,51 @@ const { resolvePython, PYTHON_DIR } = await import('../src/python.mjs')
 const py = await resolvePython()
 console.log('python      :', py === null ? '✗ 未找到' : `${py.source} → ${py.command}`)
 
-// --- .lrplugin 同步（幂等性检查，不实际写盘时也能跑） ---
+// --- .lrplugin 同步：三条分支都要真跑一遍 ---
+//
+// 原来只断言「第二次是 current」——而本机插件本来就装好了，所以它**只会**看到那条
+// 空转分支。审计员的变异 21 把 syncLrplugin 改成永远返回 'current'（比对、备份、
+// 覆盖全都不做），测试照样全绿；而 DESIGN 说这个文件存在的全部理由就是那三条分支。
+//
+// 现在把 Modules 目录指到一个隔离位置，依次验证：全新安装 → 内容变了要更新且先备份
+// → 再跑一次判定为最新，并确认用户自己放进去的文件没被动过。
 if (!noSync) {
-  const { syncLrplugin } = await import('../src/lr/install.mjs')
-  const before = await syncLrplugin({})
-  const after = await syncLrplugin({})
-  console.log(`lrplugin    : 第一次 ${before.status}，第二次 ${after.status}`)
-  assert.equal(after.status, 'current', '第二次同步应当判定为已是最新（幂等）')
+  const { syncLrplugin, lightroomModulesDir } = await import('../src/lr/install.mjs')
+  const isolated = path.join(dshHome, 'fake-lr-modules')
+  await rm(isolated, { recursive: true, force: true })
+  await mkdir(isolated, { recursive: true })
+  process.env.SHEJING_LR_MODULES_DIR = isolated
+  const dest = path.join(isolated, 'LightroomMCP.lrplugin')
+  const firstFile = path.join(dest, 'HandlerDevelop.lua')
+
+  const fresh = await syncLrplugin({})
+  assert.equal(fresh.status, 'installed', `首次同步应当是全新安装，实际 ${fresh.status}`)
+  assert.ok(existsSync(firstFile), '安装后应当有 HandlerDevelop.lua')
+  const pristine = await readFile(firstFile, 'utf8')
+
+  // 用户自己放进去的文件不能被删
+  await writeFile(path.join(dest, 'user-notes.txt'), 'my own notes')
+
+  const idempotent = await syncLrplugin({})
+  assert.equal(idempotent.status, 'current', '内容一致时应当是 current')
+  assert.equal(idempotent.changed.length, 0, 'current 时不该报告任何变更')
+
+  // 把目标文件改脏 → 必须判定为 updated，并且**先把旧内容备份下来**
+  await writeFile(firstFile, '-- 用户手改过的内容\n')
+  const updated = await syncLrplugin({})
+  assert.equal(updated.status, 'updated', `内容不一致时应当是 updated，实际 ${updated.status}`)
+  assert.deepEqual(updated.changed, ['HandlerDevelop.lua'], `应当只报告这一个文件：${updated.changed}`)
+  const backupDir = updated.backedUpTo
+  assert.ok(typeof backupDir === 'string' && existsSync(backupDir), '必须留下备份目录')
+  const backed = await readFile(path.join(backupDir, 'HandlerDevelop.lua'), 'utf8')
+  assert.equal(backed, '-- 用户手改过的内容\n', '备份里必须是**被覆盖前的**内容，否则备份没有意义')
+  assert.equal(await readFile(firstFile, 'utf8'), pristine, '覆盖后应当与包里的一致')
+  assert.equal(await readFile(path.join(dest, 'user-notes.txt'), 'utf8'), 'my own notes',
+    '用户自己放的文件不该被删')
+
+  console.log(`lrplugin    : installed → current → updated（备份 ${path.basename(backupDir)}），三条分支都验过`)
+  delete process.env.SHEJING_LR_MODULES_DIR
+  void lightroomModulesDir
 }
 
 console.log('\nlogs:')

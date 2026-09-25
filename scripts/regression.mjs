@@ -15,7 +15,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -84,13 +84,31 @@ const call = async (name, args) => {
 const expectedCount = readdirSync(source).filter(f => f.toUpperCase().endsWith('.ARW')).length
 assert.ok(expectedCount > 0, `源目录里没有 ARW：${source}`)
 
+/*
+ * 批次目录必须在**体检之前**就能确定，因为下面要用它读账本。
+ *
+ * 这一点被忽略过两次：
+ *   1. 最初写 `readdirSync(batches)[0]`——按磁盘顺序任选，纯靠运气
+ *   2. 改成「按源文件夹匹配 + 取最新」——仍然错：同一个源文件夹会有**多个**历史
+ *      批次，于是匹配到了上一轮那个，后面的断言全在验旧数据
+ *      （实测证据：体检明明写到 2026-09-26_9.25，汇总却印着 reg-final）
+ *
+ * 根因是位置：这里在体检**之前**，新批次还不存在，任何「去找刚创建的那个」
+ * 的思路都注定找不到。正解是**算出**体检将要用的那个 id——工具在没有 batch_id
+ * 时调用的正是 batches.mjs 的 batchIdFor(source)，两边同一套规则，必然一致。
+ */
+const resolvedBatchId = (batchId !== undefined && batchId !== '')
+  ? batchId
+  : batchIdFor(source)
+const batchDir = path.join(dshHome, 'shejing', 'batches', resolvedBatchId)
+
 step('① 体检（shejing_checkup）')
 const manifestPath = path.join(batchDir, 'manifest.json')
 
 if (reuse) {
   console.log(`   跳过（--reuse）：复用 ${manifestPath}`)
 } else {
-  const checkupOut = await call('shejing_checkup', { source, ...(batchId === undefined ? {} : { batch_id: batchId }) })
+  const checkupOut = await call('shejing_checkup', { source, batch_id: resolvedBatchId })
   console.log(checkupOut.split('\n').slice(0, 6).join('\n'))
 }
 
@@ -144,7 +162,7 @@ console.log(`   建议剔除 ${reject.length} 张（只取连拍组里的非保�
 
 const keepDir = path.join(source, '可导入')
 const rejectDir = path.join(source, '非导入')
-await call('shejing_cull', { source, reject, ...(batchId === undefined ? {} : { batch_id: batchId }) })
+await call('shejing_cull', { source, reject, batch_id: resolvedBatchId })
 assert.ok(!existsSync(keepDir), '预演不该创建 可导入/')
 assert.ok(!existsSync(rejectDir), '预演不该创建 非导入/')
 assert.equal(readdirSync(source).filter(f => f.toUpperCase().endsWith('.ARW')).length, expectedCount,
@@ -154,7 +172,7 @@ console.log('   预演确认：没建目录、没动文件 ✓')
 /* ---------------------------------------------------------------- 3. 真剔除 */
 
 step('③ 真剔除（shejing_cull 带 confirm）')
-await call('shejing_cull', { source, reject, confirm: true, ...(batchId === undefined ? {} : { batch_id: batchId }) })
+await call('shejing_cull', { source, reject, confirm: true, batch_id: resolvedBatchId })
 const inKeep = readdirSync(keepDir).length
 const inReject = readdirSync(rejectDir).length
 console.log(`   可导入/ ${inKeep} 张 · 非导入/ ${inReject} 张`)
@@ -170,7 +188,7 @@ console.log('   账本已记账，文件数守恒 ✓')
 /* ---------------------------------------------------------------- 4. 验收（目录库部分） */
 
 step('④ 验收（shejing_verify，目录数据库部分）')
-const verifyOut = await call('shejing_verify', { source, ...(batchId === undefined ? {} : { batch_id: batchId }) })
+const verifyOut = await call('shejing_verify', { source, batch_id: resolvedBatchId })
 const verifyHead = verifyOut.split('\n').filter(line => line.includes('目录库') || line.includes('可导入目录') || line.includes('尚未导入'))
 console.log(verifyHead.slice(0, 4).map(l => `   ${l.trim()}`).join('\n'))
 assert.ok(verifyOut.includes('目录库'), '目录数据库核对没跑起来')
@@ -184,7 +202,7 @@ const keepFiles = readdirSync(keepDir).filter(f => f.toUpperCase().endsWith('.AR
 assert.ok(keepFiles.length >= 2, '可导入目录里应当有照片')
 const picks = keepFiles.slice(0, 2)
 const planOut = await call('shejing_archive', {
-  source, picks, ...(batchId === undefined ? {} : { batch_id: batchId }),
+  source, picks, batch_id: resolvedBatchId,
 })
 const planFile = path.join(batchDir, 'export-plan.json')
 assert.ok(existsSync(planFile), '精选计划没写出来')
@@ -215,7 +233,7 @@ for (const [index, name] of toRename.entries()) {
 console.log(`   先改成：${scrambled.join(', ')}`)
 
 const dry = await call('shejing_organize', {
-  source, rename: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+  source, rename: true, batch_id: resolvedBatchId,
 })
 assert.ok(dry.includes(token), '预演输出里应当列出待改名的乱名文件')
 assert.ok(dry.includes('dry-run'), '预演应当明确标注 dry-run')
@@ -223,7 +241,7 @@ assert.ok(scrambled.every(name => existsSync(path.join(keepDir, name))), '预演
 console.log('   预演：文件名未变 ✓')
 
 await call('shejing_organize', {
-  source, rename: true, rename_confirm: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+  source, rename: true, rename_confirm: true, batch_id: resolvedBatchId,
 })
 for (const name of scrambled) {
   const base = name.replace(/\.ARW$/i, '')
@@ -240,7 +258,7 @@ const rulesFile = path.join(dshHome, 'shejing', 'shooting-rules.md')
 const beforeRules = existsSync(rulesFile) ? (await readFile(rulesFile, 'utf8')).length : 0
 
 const retroDry = await call('shejing_retro', {
-  title: '回归测试规则', body: '这条是端到端回归写的。', ...(batchId === undefined ? {} : { batch_id: batchId }),
+  title: '回归测试规则', body: '这条是端到端回归写的。', batch_id: resolvedBatchId,
 })
 assert.ok(retroDry.includes('等你'), '不带 confirm 应当只给建议、不写入')
 const afterDry = existsSync(rulesFile) ? (await readFile(rulesFile, 'utf8')).length : 0
@@ -249,7 +267,7 @@ console.log('   预演：规则文件未变 ✓')
 
 await call('shejing_retro', {
   title: '回归测试规则', body: '这条是端到端回归写的。', evidence: '自动化测试',
-  confirm: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+  confirm: true, batch_id: resolvedBatchId,
 })
 const afterRules = await readFile(rulesFile, 'utf8')
 assert.ok(afterRules.length > beforeRules, '规则文件应当变长')
@@ -267,7 +285,7 @@ step('⑧ 降级：Lightroom 不可用时的行为')
 // 所以这里断言的是「报告得清楚」，而不是「抛错」。
 const gradeOut = await call('shejing_grade', {
   photo_ids: [path.join(keepDir, picks[0])], style: 'A',
-  ...(batchId === undefined ? {} : { batch_id: batchId }),
+  batch_id: resolvedBatchId,
 })
 assert.ok(/Lightroom|桥接|bridge/i.test(gradeOut), '报告里应当说清是 Lightroom 链路问题')
 assert.ok(/失败 1 张|一张都没有渲染成功/.test(gradeOut), '报告里应当明说没有渲染成功')

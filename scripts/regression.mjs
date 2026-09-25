@@ -279,3 +279,5 @@ console.log(`   contact sheet：${(statSync(checkup.contact_sheet).size / 1024).
 console.log(`   可导入：${inKeep} 张 · 非导入：${inReject} 张`)
 console.log(`   总耗时：${((Date.now() - t0) / 1000).toFixed(1)}s`)
 console.log('\n✅ 端到端回归通过（不依赖 Lightroom 的部分）')
+// 显式退出：真机上桥接是子进程，会吊住事件循环。
+process.exit(0)

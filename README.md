@@ -94,9 +94,20 @@ parameter. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ```bash
 node scripts/build-client.mjs   # build the browser half (no toolchain needed — it is a wrapper)
-node scripts/test.mjs           # plugin surface + every gate path + the Python tests
-node scripts/regression.mjs <cloned-batch-dir>   # end-to-end on a real batch (~15 min for 75 frames)
+node scripts/test.mjs           # all six suites (needs DSH_HOME for two of them)
+node scripts/regression.mjs <cloned-batch-dir>   # end-to-end on a real batch (~7 min for 75 frames)
 ```
+
+The suites are:
+
+| Suite | What it covers |
+|---|---|
+| `smoke.mjs` | tool registration surface, every gate path, skill parsing, panel routes |
+| `smoke.mjs --no-connection` | graceful activation when a service is missing |
+| `check-client.mjs` | actually renders every panel tab with a fake React (catches things `node --check` cannot) |
+| `test-bridge.mjs` | the LR channel: MCP handshake, image blocks, `success:false`, reconnect, clear errors — against a fake bridge |
+| `test-tools-lr.mjs` | the grading flow end to end against a fake bridge: what actually reaches the wire, the curve-endpoint guard, and the gate's ask → approve → whitelist cycle |
+| `test_grouping.py` | the burst grouping algorithm must produce a *partition*, plus 200 randomized rounds |
 
 `scripts/regression.mjs` drives the real tool implementations against a cloned batch, so it covers
 parameter translation, path resolution and ledger writes — not just the Python scripts. It walks
@@ -104,8 +115,8 @@ eight steps: checkup → cull dry-run → cull → verify → archive plan → o
 retrospective (dry/real) → graceful degradation when Lightroom is unavailable. Only "actually
 export" and "actually write develop settings" need Lightroom; everything else verifies without it.
 
-It needs `DSH_HOME` set so it never writes into your real `~/.dsh`. Pass `--reuse` to skip the slow
-checkup stage and re-test only the downstream steps.
+Both `test.mjs` and `regression.mjs` need `DSH_HOME` set so they never write into your real `~/.dsh`.
+Pass `--reuse` to the regression to skip the slow checkup stage and re-test only the downstream steps.
 
 Design decisions and the reasoning behind them are in [docs/DESIGN.md](docs/DESIGN.md).
 

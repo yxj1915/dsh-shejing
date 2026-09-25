@@ -31,9 +31,29 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { photo_id: { type: 'string' } }, required: ['photo_id'], additionalProperties: false },
   },
   {
+    name: 'apply_auto',
+    description: '假实现：永远返回 success:false（真实 handler 失败时就是这样，且不设 isError）。',
+    inputSchema: { type: 'object', properties: { photo_ids: { type: 'array' } }, additionalProperties: false },
+  },
+  {
+    name: 'create_snapshot',
+    description: '假实现：建快照。',
+    inputSchema: { type: 'object', properties: { photo_id: {}, name: {} }, additionalProperties: false },
+  },
+  {
     name: 'set_develop_settings',
-    description: '假实现：永远失败，用来测错误路径。',
-    inputSchema: { type: 'object', properties: { photo_id: { type: 'string' } }, required: ['photo_id'], additionalProperties: false },
+    description: '假实现：写入调色参数（会把下发的参数记进 SHEJING_FAKE_LR_LOG）。',
+    inputSchema: { type: 'object', properties: { photo_id: {}, settings: {} }, additionalProperties: false },
+  },
+  {
+    name: 'set_tone_curve',
+    description: '假实现：写曲线（同样记账）。',
+    inputSchema: { type: 'object', properties: { photo_id: {}, channel: {}, points: {} }, additionalProperties: false },
+  },
+  {
+    name: 'export_photos',
+    description: '假实现：真的在目标目录里写出文件，好让调用方核对数量。',
+    inputSchema: { type: 'object', properties: { photo_ids: {}, destination: {} }, additionalProperties: false },
   },
 ]
 
@@ -54,6 +74,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   calls += 1
   const name = request.params.name
   const args = request.params.arguments ?? {}
+
+  // 每一次调用都记下来——测试要核对「到底下发了什么」，漏记一次就少一条证据。
+  const logFile = process.env.SHEJING_FAKE_LR_LOG
+  if (logFile !== undefined && logFile !== '') {
+    const { appendFileSync } = await import('node:fs')
+    appendFileSync(logFile, `${JSON.stringify({ tool: name, args })}\n`)
+  }
 
   if (process.env.SHEJING_FAKE_LR_DIE_AFTER === '1' && calls >= 1) {
     // 先把这一条回答掉，再退出——模拟「调用成功但桥接随后消失」。
@@ -78,11 +105,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'set_develop_settings') {
+  if (name === 'apply_auto') {
     // 真实行为：handler 失败时只写 success:false，**不设 isError**。
     return {
       content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'photo not found' }) }],
       structuredContent: { success: false, error: 'photo not found' },
+    }
+  }
+
+  if (name === 'create_snapshot' || name === 'set_develop_settings' || name === 'set_tone_curve') {
+    return { content: [{ type: 'text', text: `${name} ok` }], structuredContent: { ok: true } }
+  }
+
+  if (name === 'export_photos') {
+    // 真的写出文件：归档工具会核对「目标目录里的实际文件数」。
+    const { mkdirSync, writeFileSync } = await import('node:fs')
+    const path = await import('node:path')
+    const destination = String(args.destination ?? '')
+    const ids = Array.isArray(args.photo_ids) ? args.photo_ids : []
+    mkdirSync(destination, { recursive: true })
+    for (const id of ids) {
+      const base = path.basename(String(id)).replace(/\.[^.]+$/u, '')
+      writeFileSync(path.join(destination, `${base}.jpg`), 'fake-jpeg')
+    }
+    return {
+      content: [{ type: 'text', text: `导出 ${ids.length} 张 → ${destination}` }],
+      structuredContent: { count: ids.length },
     }
   }
 

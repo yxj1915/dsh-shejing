@@ -5,7 +5,10 @@
  *   node scripts/test.mjs smoke      只跑插件注册面与门禁
  *   node scripts/test.mjs client     只跑浏览器半边的构建与渲染检查
  *   node scripts/test.mjs bridge     只跑 LR 通道（用假桥接）
+ *   node scripts/test.mjs tools      只跑调色阶段（插件 + 假桥接）
  *   node scripts/test.mjs python     只跑 Python 侧（分组算法等）
+ *
+ * 需要 DSH_HOME 的两套（tools 与 regression）会写入该目录，别指向真实的 ~/.dsh。
  *
  * 端到端回归（scripts/regression.mjs）不在这里跑——它要十几分钟并且需要一份
  * 真实批次，属于手工触发的验收。
@@ -55,6 +58,16 @@ if (only === undefined || only === 'client') {
 if (only === undefined || only === 'bridge') {
   results.push(await run(process.execPath,
     [path.join(ROOT, 'scripts', 'test-bridge.mjs')], 'JS · LR 通道（假桥接）'))
+}
+
+if (only === undefined || only === 'tools') {
+  if (process.env.DSH_HOME === undefined) {
+    console.error('JS · 调色阶段：跳过（未设置 DSH_HOME）')
+    results.push({ label: 'JS · 调色阶段（假桥接）', code: 1 })
+  } else {
+    results.push(await run(process.execPath,
+      [path.join(ROOT, 'scripts', 'test-tools-lr.mjs')], 'JS · 调色阶段（假桥接）'))
+  }
 }
 
 if (only === undefined || only === 'python') {

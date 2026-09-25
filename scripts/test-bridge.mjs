@@ -62,7 +62,9 @@ await withBridge({ SHEJING_BRIDGE_ENTRY: FAKE }, async (bridge, mod) => {
     assert.match(previewText, /fake-preview-181417\.jpg/, '应当带上 file_path')
   })
 
-  const failed = await bridge.call('set_develop_settings', { photo_id: 'nope' })
+  // apply_auto 在假服务器上永远返回 success:false —— 真实 handler 失败时正是这样，
+  // 而且**不设 isError**，所以调用方必须自己看 payload。
+  const failed = await bridge.call('apply_auto', { photo_ids: ['nope'] })
   const failedText = mod.LightroomBridge.toText(failed)
   check('success:false 的结果原样透出（不当成成功）', () => {
     assert.match(failedText, /success/, '应当把 payload 里的失败信息透出来')

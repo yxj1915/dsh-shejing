@@ -201,6 +201,36 @@ check('批次目录里留下了账本与计划', () => assert.ok(files.includes(
 
 /* ---------------------------------------------------------------- 3. 归档 */
 
+console.log('\n—— 风格 B：曲线首点归零（gotcha #24，整个插件存在的理由）——')
+/*
+ * 为什么单列一段：风格 B 的每个通道曲线首点都是 (0, y≠0)，而那正是 25 张照片
+ * 被染成紫红色的那个条件。审计员做过变异——把 styles.mjs 里的归零保护删掉，
+ * 整套测试**依然全绿**：因为其他用例只跑风格 A/C，而它们的首点本来就在 0 上，
+ * `first[0] !== 0 || first[1] === 0` 于是恒真，什么都没验到。
+ *
+ * 所以这里必须**真的用风格 B 跑一次**，并逐通道核对下发到线上的点。
+ */
+{
+  await rm(LOG, { force: true })
+  const styleB = path.join(dshHome, 'fake-photos', '可导入', 'DSC001.ARW')
+  const { output } = await invoke('shejing_grade', { photo_ids: [styleB], style: 'B' })
+  const calls = readFileSync(LOG, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+  const curves = calls.filter(c => c.tool === 'set_tone_curve')
+  check('风格 B 会把三条通道曲线都下发', () => {
+    assert.ok(curves.length >= 3, `应当至少下发 3 条曲线，实际 ${curves.length}`)
+  })
+  check('每条曲线的首点都被归零成 (0,0)——这正是紫色事故的防线', () => {
+    for (const c of curves) {
+      const first = (c.args.points ?? [])[0]
+      assert.ok(Array.isArray(first) && first[0] === 0 && first[1] === 0,
+        `${c.args.channel} 的首点是 ${JSON.stringify(first)}，应当是 [0,0]`)
+    }
+  })
+  check('报告里如实说明了参数被修正', () => {
+    assert.match(String(output), /参数修正/, '风格 B 应当触发修正说明')
+  })
+}
+
 console.log('\n—— 归档（真实导出，经假桥接）——')
 
 const plan = await invoke('shejing_archive', {

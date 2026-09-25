@@ -13,6 +13,7 @@
                 [--window 60] [--hash-max 14] [--bracket-ev 0.8] [--grid 6]
 """
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -111,9 +112,44 @@ def ev_rel(exposure_seconds, fnumber, iso):
             + np.log2(iso / 100.0))
 
 
-def decode(src, dst, width):
-    if os.path.exists(dst):
+def _usable(path):
+    """缓存文件能不能用：存在、非空、且文件头能被解析。
+
+    只判断 os.path.exists 是不够的：一个 0 字节或被中断留下的半截文件会一直
+    留在缓存里，之后**每次**运行都会在解码它时崩掉，而且自己不会恢复。
+    """
+    try:
+        if os.path.getsize(path) == 0:
+            return False
+        with Image.open(path) as im:
+            im.verify()
         return True
+    except Exception:
+        return False
+
+
+def cache_key(path, idx):
+    """缓存文件名 = 序号 + 源文件身份的短哈希。
+
+    带上身份，源文件一变（换了内容、被替换、顺序变了）就必然落到新的缓存项，
+    不会命中别人的图。序号保留只是为了文件名可读、以及让同一批的缓存排在一起。
+    """
+    try:
+        st = os.stat(path)
+        ident = "%s|%d|%d" % (os.path.basename(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        ident = os.path.basename(path)
+    return "%03d_%s" % (idx, hashlib.sha1(ident.encode("utf-8")).hexdigest()[:10])
+
+
+def decode(src, dst, width):
+    if _usable(dst):
+        return True
+    if os.path.exists(dst):
+        try:
+            os.remove(dst)      # 坏缓存清掉，否则会一直毒着
+        except OSError:
+            pass
     r = sh(["sips", "-s", "format", "jpeg", "--resampleWidth", str(width),
             src, "--out", dst])
     return r.returncode == 0 and os.path.exists(dst)
@@ -126,8 +162,13 @@ def shrink(src, dst, width):
     所以每张只该调一次 sips，其余尺寸用 Pillow 派生。失败返回 False，
     由调用方回退到 sips。
     """
-    if os.path.exists(dst):
+    if _usable(dst):
         return True
+    if os.path.exists(dst):
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
     try:
         im = ImageOps.exif_transpose(Image.open(src))
         im.thumbnail((width, width), Image.LANCZOS)
@@ -208,6 +249,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     cache = os.path.join(out, "_cache")
     os.makedirs(cache, exist_ok=True)
+    run_keys = set()   # 本次运行用到的缓存键，收尾时清掉不属于它们的旧文件
 
     files = sorted(f for f in os.listdir(src)
                    if os.path.splitext(f)[1].lower() in RAW_EXT
@@ -257,9 +299,17 @@ def main():
         # 每张**只调一次 sips**：实测单次 sips 解码 ARW 约 7 秒，而 Pillow 从
         # 1200px 缩到 300px 只要 0.05 秒。原先每张调两次 sips，75 张要 17 分钟、
         # 500 张要两小时；现在砍掉一半。
-        big = os.path.join(cache, "%03d_big.jpg" % i)
+        # 缓存键必须带上**源文件的身份**（名字 + 大小 + mtime），不能只用序号。
+        #
+        # 只用 `%03d` 时：删掉一张照片再重跑，后面的文件整体前移一位却命中了
+        # 前一张的缓存——B 的清晰度、感知哈希与缩略图全变成 A 的。而 contact
+        # sheet 与「清晰度」那一列正是用户拿来决定剔哪张的依据，于是他会**照着
+        # 错的证据剔错帧**；感知哈希错了还会连带把分组也分错。
+        key = cache_key(p, i)
+        run_keys.add(key)
+        big = os.path.join(cache, key + "_big.jpg")
         decode(p, big, BIG_WIDTH)
-        small = os.path.join(cache, "%03d_small.jpg" % i)
+        small = os.path.join(cache, key + "_small.jpg")
         if not shrink(big, small, SHEET_CELL):
             decode(p, small, SHEET_CELL)  # 兜底：Pillow 失败时回退到 sips
         exposure = pick(md.get("exposure"), "kMDItemExposureTimeSeconds")
@@ -283,6 +333,16 @@ def main():
             print("  读取 EXIF/解码 %d/%d" % (i, len(files)))
 
     # ---- 清晰度（全部）与分块合焦面（用于堆栈判定）
+    # 清掉不属于本次运行的旧缓存（比如上一版按序号命名的、或已删除照片的）。
+    # 不做的话 _cache 会随着每次导入/删除无限增长，而它就在批次目录里。
+    for stale in os.listdir(cache):
+        stem = stale.rsplit("_", 1)[0]
+        if stem not in run_keys:
+            try:
+                os.remove(os.path.join(cache, stale))
+            except OSError:
+                pass
+
     print("  计算清晰度…")
     for it in items:
         it["sharp"] = lap_var(gray(it["big"])) if it["big"] else None

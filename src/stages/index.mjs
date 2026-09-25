@@ -151,10 +151,20 @@ async function setUpCollections(bridge, { keepDir, set, collection, lines, failu
 }
 
 export function registerStageTools(ctx, { bridge, log, config, ledger }) {
-  const registered = ['shejing_checkup', 'shejing_cull', 'shejing_organize', 'shejing_grade',
-    'shejing_verify', 'shejing_archive', 'shejing_retro', 'shejing_batch_status']
+  // 记录**真的注册成功**的工具名。
+  //
+  // 这里原来是一个硬编码数组：即使一个都没注册上（工具名写错、或上层拒绝注册），
+  // 它照样返回 8 个名字。审计员用变异证明了后果——把一个阶段工具改名之后，
+  // 激活标记里依然是 8 个名字，smoke 与**发布闸**全部照样绿，而那个工具在真实
+  // 运行里根本不存在。发布闸本该是「装出来的那份真的能用」的最后一关。
+  const registered = []
+  const register = (definition) => {
+    const dispose = ctx.tools.register(definition)
+    registered.push(definition.name)
+    return dispose
+  }
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_checkup',
     description:
       '摄鲸·体检（只读，不碰 Lightroom）：扫描源文件夹，做连拍分组、组内清晰度、组内曝光跨度、'
@@ -214,7 +224,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_batch_status',
     description: '读取某个批次的账本（manifest.json），返回各阶段的进行状态与已记录的决定。',
     parameters: {
@@ -236,7 +246,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_cull',
     description:
       '摄鲸·剔除：把源文件夹里的照片**移动**到 `可导入/` 与 `非导入/`（同盘 rename，瞬时且可逆，'
@@ -278,7 +288,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_grade',
     description:
       '摄鲸·调色：按内置风格或显式参数给照片调色，并**逐张**建快照 → 写滑杆与曲线 → 渲染预览。\n'
@@ -434,7 +444,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_organize',
     description:
       '摄鲸·整理：把 `可导入/` 里的照片统一重命名（不可逆，默认只预演）、**原地**导入 Lightroom'
@@ -540,7 +550,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_verify',
     description:
       '摄鲸·验收：抽样渲染 ≤10 张（带当前编辑的 JPEG）+ 目录数据库交叉核对（星级/色标/'
@@ -616,7 +626,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_archive',
     description:
       '摄鲸·归档：先出精选计划（星级 ≥ 阈值），把清单交给用户增删；带 confirm:true（会被门禁'
@@ -696,7 +706,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
     },
   }))
 
-  ctx.effect(() => ctx.tools.register({
+  ctx.effect(() => register({
     name: 'shejing_retro',
     description:
       '摄鲸·复盘：把本批的教训追加进拍摄前规则。**经用户确认才写入**（confirm:true 会被门禁'

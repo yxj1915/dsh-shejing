@@ -139,7 +139,17 @@ step('插件从安装产物激活（写出激活标记）', marker !== null,
 
 if (marker !== null) {
   step('56 个 LR 工具全部注册', marker.lrTools.length === 56, `${marker.lrTools.length} 个`)
-  step('九个摄鲸工具注册', marker.stageTools.length === 8, marker.stageTools.join(', '))
+  // 断言**确切的名字**，不只是个数：审计员的变异把一个阶段工具改了名
+  // （shejing_retro → shejing_retro_RENAMED，那个工具在真实运行里就不存在了），
+  // 而「个数 === 8」照样通过，smoke 与发布闸全绿。发布闸本该是「装出来的那份
+  // 真的能用」的最后一关，所以它必须核对名字本身。
+  const EXPECTED_STAGE_TOOLS = ['shejing_batch_status', 'shejing_archive', 'shejing_checkup',
+    'shejing_cull', 'shejing_grade', 'shejing_organize', 'shejing_retro', 'shejing_verify']
+  const actualStage = [...marker.stageTools].sort()
+  step('八个阶段工具按名字全部注册（含 shejing_doctor 共九个摄鲸工具）',
+    actualStage.length === EXPECTED_STAGE_TOOLS.length
+      && actualStage.every((name, i) => name === EXPECTED_STAGE_TOOLS[i]),
+    actualStage.join(', '))
 
   const token = /token=([A-Za-z0-9_-]+)/.exec(serverLog)?.[1]
   if (token === undefined) {

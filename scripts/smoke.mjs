@@ -7,7 +7,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -332,6 +332,83 @@ if (noConnection) {
   assert.equal(probe.ok, true)
   assert.equal(probe.lrToolCount, 56)
   assert.ok(Array.isArray(probe.batches))
+
+  /*
+   * 面板的**数据接口**要端到端跑一遍。
+   *
+   * 审计员的变异 24 证明过：把 batchSummary 掏空成返回空对象（于是每个批次在面板
+   * 上都是空白的），**七套测试全部照样绿**——因为 /batches 与 /batch 从没被执行过，
+   * 而 check-client 喂的是手写 fixture，没有任何东西把 fixture 的形状和接口真实的
+   * 返回绑在一起。接口改了、面板读不到，两边都不会有人发现。
+   */
+  {
+    const batchesDir = path.join(dshHome, 'shejing', 'batches', 'smoke-route-batch')
+    await mkdir(batchesDir, { recursive: true })
+    await writeFile(path.join(batchesDir, 'manifest.json'), `${JSON.stringify({
+      batch_id: '2026-01-02_smoke',
+      source_path: '/tmp/smoke-source',
+      photo_count: 3,
+      camera: ['ILCE-7M5'],
+      updated: '2026-01-02 10:00:00',
+      stages: {
+        checkup: {
+          status: 'done',
+          cache_dir: '/tmp/smoke-cache',
+          contact_sheet: '/tmp/smoke-sheet.jpg',
+          groups: [{
+            count: 2, kind: '连拍', reliable: true, span_s: 1.5, ev_spread: 0.25, keep: 'a.ARW',
+            frames: [{ name: 'a.ARW' }, { name: 'b.ARW' }],
+          }],
+          frames: {
+            'a.ARW': { small: '/tmp/a.jpg', big: null, sharp: 123.4, ev: -12.5 },
+            'b.ARW': { small: null, big: null, sharp: 100.0, ev: -12.5 },
+          },
+        },
+        cull: { status: 'done', keep_dir: '/tmp/smoke-source/可导入', kept: 2, rejected: 1 },
+      },
+    }, null, 1)}\n`)
+
+    const listRoute = ctx.connection.fetchRoutes.get('/api/shejing/batches')
+    const listResponse = await listRoute.fetch(new Request('http://x/api/shejing/batches'))
+    const list = await listResponse.json()
+    assert.equal(listResponse.status, 200)
+    const row = list.batches.find(item => item.id === 'smoke-route-batch')
+    assert.ok(row !== undefined, '列表里应当有刚建的这个批次')
+    assert.equal(row.source, '/tmp/smoke-source', '列表要带源文件夹，面板的批次页要用')
+    assert.equal(row.photoCount, 3)
+    assert.deepEqual(row.stages, ['checkup', 'cull'])
+    console.log('面板·批次列表 →', list.batches.length, '个，字段齐')
+
+    const oneRoute = ctx.connection.fetchRoutes.get('/api/shejing/batch')
+    const oneResponse = await oneRoute.fetch(new Request('http://x/api/shejing/batch?id=smoke-route-batch'))
+    const payload = await oneResponse.json()
+    assert.equal(oneResponse.status, 200)
+    // 接口返回的是 {ok, batch}——**包了一层**。客户端读的是 detail.batch，
+    // 这里也必须按同一层级断言，否则测的就不是客户端真正拿到的东西。
+    assert.equal(payload.ok, true)
+    const one = payload.batch
+    assert.ok(one !== undefined, '返回里必须有 batch 字段（客户端读的就是它）')
+    assert.equal(one.batchId, '2026-01-02_smoke')
+    assert.equal(one.camera.length, 1)
+    assert.equal(one.contactSheet, '/tmp/smoke-sheet.jpg')
+    assert.equal(one.cacheDir, '/tmp/smoke-cache')
+    // 分组与逐帧信息是「剔除审阅」面板的全部依据，掏空这里面板就是个空壳。
+    assert.equal(one.groups.length, 1, '分组必须传下去，否则剔除审阅页是空的')
+    assert.equal(one.groups[0].frames.length, 2)
+    assert.equal(one.groups[0].keep, 'a.ARW')
+    assert.equal(one.groups[0].frames[0].name, 'a.ARW')
+    assert.equal(one.groups[0].frames[0].sharp, 123.4, '逐帧清晰度必须传下去（用户据此剔帧）')
+    assert.equal(one.groups[0].frames[0].small, '/tmp/a.jpg')
+    assert.equal(one.cull.kept, 2)
+    console.log('面板·单批详情 →', one.groups.length, '组 /', one.groups[0].frames.length, '帧，字段齐')
+
+    // 路径穿越必须被挡住（面板可以传任意 id 进来）
+    const bad = await oneRoute.fetch(new Request('http://x/api/shejing/batch?id=../../evil'))
+    assert.equal(bad.status, 400, '穿越型 id 必须 400')
+    const missing = await oneRoute.fetch(new Request('http://x/api/shejing/batch?id=does-not-exist'))
+    assert.equal(missing.status, 404, '不存在的批次应当 404')
+    console.log('面板·id 防护  → 穿越 400 / 不存在 404')
+  }
   // 版本号必须来自包自己的 package.json。曾经用 process.env.npm_package_version，
   // 那个变量在 DSH 进程里根本不存在，于是永远回退到硬编码字面量——改了版本号
   // 面板上显示的还是旧的，属于「不影响功能所以没人发现」的偏差。

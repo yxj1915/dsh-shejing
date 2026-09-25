@@ -36,6 +36,9 @@ const results = []
 
 if (only === undefined || only === 'smoke') {
   results.push(await run(process.execPath, [path.join(ROOT, 'scripts', 'smoke.mjs')], 'JS · 插件注册面与门禁'))
+  // 桌面 composition 里某些服务可能不存在；插件必须照常激活，只是少注册路由。
+  results.push(await run(process.execPath,
+    [path.join(ROOT, 'scripts', 'smoke.mjs'), '--no-connection'], 'JS · 缺 connection 服务时的降级'))
 }
 
 if (only === undefined || only === 'client') {

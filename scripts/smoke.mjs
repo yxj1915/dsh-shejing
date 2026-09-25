@@ -11,6 +11,8 @@ import { rm } from 'node:fs/promises'
 import path from 'node:path'
 
 const noSync = process.argv.includes('--no-sync')
+/** 模拟桌面 composition 里某些服务不存在的场景：插件必须照常激活，只是少注册路由。 */
+const noConnection = process.argv.includes('--no-connection')
 
 // 门禁白名单会落盘，清掉它才能每次都从「新参数」这个真实初态开始测。
 const dshHome = process.env.DSH_HOME ?? path.join(process.env.HOME ?? '', '.dsh')
@@ -49,7 +51,9 @@ const ctx = {
   },
   inject(names, callback) {
     if (names.includes('systemPrompt')) callback(ctx)
-    if (names.includes('connection')) callback(ctx)
+    // --no-connection 时**不**回调：模拟桌面 composition 里没有 connection 服务。
+    // 插件用了可选注入，所以必须照常激活，只是面板路由不注册。
+    if (names.includes('connection') && !noConnection) callback(ctx)
   },
   connection: {
     fetchRoutes: new Map(),
@@ -179,20 +183,25 @@ console.log('门禁·同参数第二次    →', again.kind)
 assert.equal(again.kind, 'allow', '已入白名单的参数不该再拦')
 
 // --- 面板路由 ---
-for (const expected of ['/api/shejing/probe', '/api/shejing/batches', '/api/shejing/batch']) {
-  assert.ok(ctx.connection.fetchRoutes.has(expected), `应当注册路由 ${expected}`)
+if (noConnection) {
+  assert.equal(ctx.connection.fetchRoutes.size, 0, '没有 connection 服务时不该注册任何路由')
+  console.log('面板路由     : 跳过（模拟无 connection 服务，插件仍正常激活）')
+} else {
+  for (const expected of ['/api/shejing/probe', '/api/shejing/batches', '/api/shejing/batch']) {
+    assert.ok(ctx.connection.fetchRoutes.has(expected), `应当注册路由 ${expected}`)
+  }
+  const route = ctx.connection.fetchRoutes.get('/api/shejing/probe')
+  assert.ok(route, '探针路由路径应为 /api/shejing/probe')
+  assert.deepEqual(route.methods, ['GET'])
+  assert.equal(route.requestBody, 'buffered')
+  const probeResponse = await route.fetch(new Request('http://x/api/shejing/probe'))
+  const probe = await probeResponse.json()
+  console.log('面板路由     :', probeResponse.status, 'ok=' + probe.ok, 'lrToolCount=' + probe.lrToolCount, 'batches=' + probe.batches.length)
+  assert.equal(probeResponse.status, 200)
+  assert.equal(probe.ok, true)
+  assert.equal(probe.lrToolCount, 56)
+  assert.ok(Array.isArray(probe.batches))
 }
-const route = ctx.connection.fetchRoutes.get('/api/shejing/probe')
-assert.ok(route, '探针路由路径应为 /api/shejing/probe')
-assert.deepEqual(route.methods, ['GET'])
-assert.equal(route.requestBody, 'buffered')
-const probeResponse = await route.fetch(new Request('http://x/api/shejing/probe'))
-const probe = await probeResponse.json()
-console.log('面板路由     :', probeResponse.status, 'ok=' + probe.ok, 'lrToolCount=' + probe.lrToolCount, 'batches=' + probe.batches.length)
-assert.equal(probeResponse.status, 200)
-assert.equal(probe.ok, true)
-assert.equal(probe.lrToolCount, 56)
-assert.ok(Array.isArray(probe.batches))
 
 // --- Python 运行时 ---
 const { resolvePython, PYTHON_DIR } = await import('../src/python.mjs')

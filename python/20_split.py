@@ -74,8 +74,14 @@ def main():
         print("  mv <其余 %d 张> %s/" % (len(keep), KEEP_DIR))
         return 0
 
-    if not to_move:
-        print("\n没有待剔文件，什么都不做。")
+    # 只有「两个都为空」才是真的没事可做。
+    #
+    # 不能写成 `if not to_move:`——那会在**零剔除**时直接返回，于是「其余全部移进
+    # 可导入/」这条语义被跳过：用户体检后说「全留」，结果什么都没发生，stages.cull
+    # 不记账，后面的导入只能回退到源目录，照片永远没进 可导入/。
+    # 真机流水线正是这样抓到的（预演说「mv 其余 3 张」，真跑却说「什么都不做」）。
+    if not to_move and not keep:
+        print("\n源目录里没有可整理的照片，什么都不做。")
         return 0
 
     keep_dir = os.path.join(src, KEEP_DIR)

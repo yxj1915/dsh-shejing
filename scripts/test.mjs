@@ -84,7 +84,13 @@ if (only === undefined || only === 'python') {
     console.error('JS · 找不到 Python 运行时，跳过 Python 侧测试')
     results.push({ label: 'Python · 全部', code: 1 })
   } else {
-    results.push(await run(python.command, [path.join(ROOT, 'tests', 'test_grouping.py')], 'Python · 分组算法'))
+    const suites = [
+      ['test_grouping.py', 'Python · 分组算法'],
+      ['test_split.py', 'Python · 剔除脚本'],
+    ]
+    for (const [file, label] of suites) {
+      results.push(await run(python.command, [path.join(ROOT, 'tests', file)], label))
+    }
   }
 }
 

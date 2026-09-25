@@ -744,14 +744,16 @@ function OrganizationHandler.rotatePhoto(args)
 end
 
 -- =====================================================================
--- remove_from_catalog — destructive, confirm-gated
+-- remove_from_catalog — 当前 SDK 做不到，明确拒绝
 -- =====================================================================
 --
--- catalog:removePhoto(photo) removes the photo from the catalog (files on
--- disk are NOT deleted). Destructive and hard to undo, so the tool
--- contract demands confirm=true and the handler re-checks it: an
--- accidental call errors instead of removing anything. Verification: the
--- ids must no longer resolve afterwards.
+-- 上游原本假设 catalog:removePhoto(photo) 存在。**它不存在**：实测调用会报
+--     attempt to call method 'removePhoto' (a nil value)
+-- 查过官方 API：LrCatalog 没有 removePhoto，LrPhoto 也没有从目录移除自身的方法
+-- （只有 deleteSmartPreview 与 removeKeyword）。
+--
+-- 所以这个 handler 现在明确报错并把原因讲清楚。保留 confirm 检查是为了让调用方
+-- 先看到「这是破坏性操作」而不是「这个功能不存在」——顺序反了会让人以为参数写错了。
 
 function OrganizationHandler.removeFromCatalog(args)
     if not args.photo_ids or #args.photo_ids == 0 then
@@ -763,44 +765,24 @@ function OrganizationHandler.removeFromCatalog(args)
             .. "(files on disk are kept; only the catalog entries are removed)")
     end
 
-    local catalog = LrApplication.activeCatalog()
-
-    catalog:withWriteAccessDo("Remove From Catalog", function()
-        local resolved = PhotoLookup.resolveMany(catalog, args.photo_ids)
-        for _, entry in ipairs(resolved) do
-            if entry.photo then
-                catalog:removePhoto(entry.photo)
-            end
-        end
-    end)
-
-    -- Verify: every id that resolved before must now be gone.
-    local stillPresent = {}
-    catalog:withReadAccessDo(function()
-        local resolved = PhotoLookup.resolveMany(catalog, args.photo_ids)
-        for _, entry in ipairs(resolved) do
-            if entry.photo then
-                table.insert(stillPresent, tostring(entry.id))
-            end
-        end
-    end)
-
-    Log.info(string.format("removeFromCatalog: %d removed, %d still present",
-        #args.photo_ids - #stillPresent, #stillPresent))
-
-    local result = {
-        success = #stillPresent == 0,
-        requested = #args.photo_ids,
-        still_present = stillPresent,
-        message = string.format("Removed %d photo(s) from the catalog",
-            #args.photo_ids - #stillPresent),
-    }
-    if #stillPresent > 0 then
-        result.warning = "Some photos are still in the catalog: "
-            .. table.concat(stillPresent, ", ")
-            .. ". Re-run for those ids."
-    end
-    return result
+    -- ⚠️ 这个工具在当前 Lightroom SDK 上**无法实现**，实测会报
+    --     attempt to call method 'removePhoto' (a nil value)
+    --
+    -- 官方 API 里没有这个能力：
+    --   · LrCatalog 的方法列表里没有 removePhoto（只有 addPhoto / createCollection /
+    --     findPhotos / getAllPhotos / withWriteAccessDo 等）
+    --   · LrPhoto 只有 deleteSmartPreview 与 removeKeyword，没有从目录移除自身的方法
+    --
+    -- 所以这里明确报错，把「做不到」讲清楚，而不是把 nil 错误抛给调用方——
+    -- 那种错误容易被误读成「参数传错了」，然后有人去乱试参数。
+    --
+    -- 真要移除只能在 Lightroom 界面里手动操作（图库 → 选中 → Delete → 选「移除」），
+    -- 或者直写 .lrcat —— 后者绝对禁止（Lightroom 开着时必然损坏目录）。
+    error("remove_from_catalog is not supported by the Lightroom SDK: LrCatalog has no "
+        .. "removePhoto method, and LrPhoto has no method to remove itself from the "
+        .. "catalog. Remove the photos in Lightroom's UI instead "
+        .. "(Library → select → Delete → Remove, not Delete from Disk). "
+        .. "This tool intentionally does nothing.")
 end
 
 return OrganizationHandler

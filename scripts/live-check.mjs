@@ -12,7 +12,6 @@
  */
 
 import { existsSync } from 'node:fs'
-import net from 'node:net'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -20,7 +19,6 @@ import process from 'node:process'
 import { BRIDGE_ENTRY, LightroomBridge, LightroomUnavailable } from '../src/lr/bridge.mjs'
 
 const TOKEN_FILE = path.join(homedir(), '.config', 'lightroom-mcp', 'token')
-const REQUEST_PORT = Number(process.env.LIGHTROOM_MCP_REQUEST_PORT ?? 58763)
 
 let failed = 0
 function step(label, ok, detail) {
@@ -28,32 +26,16 @@ function step(label, ok, detail) {
   if (!ok) failed += 1
 }
 
-function portListening(port, timeoutMs = 1000) {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port })
-    const done = (value) => { socket.removeAllListeners(); socket.destroy(); resolve(value) }
-    socket.setTimeout(timeoutMs)
-    socket.once('connect', () => done(true))
-    socket.once('timeout', () => done(false))
-    socket.once('error', () => done(false))
-  })
-}
-
 console.log('真机检查（只读）\n')
 
 console.log('—— 环境 ——')
 step('授权 token 存在', existsSync(TOKEN_FILE), TOKEN_FILE)
-step('桥接端口在监听', await portListening(REQUEST_PORT), `127.0.0.1:${REQUEST_PORT}`)
 step('bridge 入口存在', existsSync(BRIDGE_ENTRY), BRIDGE_ENTRY)
 
-if (!await portListening(REQUEST_PORT)) {
-  console.log('\nLightroom 没开、或插件没在 Start Server。先做这两件事再跑本检查：')
-  console.log('  1. 打开 Adobe Lightroom Classic，等它把增效工具加载完（约 1.5 分钟）')
-  console.log('  2. 文件 ▸ 增效工具管理器 ▸ Lightroom MCP ▸ Start Server')
-  process.exit(2)
-}
-
-console.log('\n—— 链路 ——')
+// 刻意**不**用裸 TCP 探测端口来判断「Lightroom 在不在」。
+// 你自己的 gotcha 记着：频繁新建连接会把插件的 socket 重绑循环打坏；而一次
+// connect-立刻-close 正是那种操作。直接走一次真正的握手，既更准也更安全。
+console.log('\n—— 链路（一次握手，不裸连探测）——')
 const bridge = new LightroomBridge({ log: (m) => console.log(`     [bridge] ${m}`) })
 
 try {
@@ -93,9 +75,11 @@ try {
   const isUnavailable = error instanceof LightroomUnavailable
   step('链路可用', false, `${isUnavailable ? 'Lightroom 不可用' : '出错'}：${error?.message ?? error}`)
   if (isUnavailable) {
-    console.log('\n  若握手失败，按这个顺序恢复：')
-    console.log('    Lightroom 里 Start Server → Reload Plug-in → 重启 Lightroom')
-    console.log('    然后看一眼日志：~/Documents/LrClassicLogs/LightroomMCP.log')
+    console.log('\n  按这个顺序恢复：')
+    console.log('    1. Lightroom 里 文件 ▸ 增效工具管理器 ▸ Lightroom MCP ▸ Start Server')
+    console.log('    2. Reload Plug-in')
+    console.log('    3. 还不行就重启 Lightroom')
+    console.log('    日志：~/Documents/LrClassicLogs/LightroomMCP.log')
   }
 } finally {
   await bridge.close()

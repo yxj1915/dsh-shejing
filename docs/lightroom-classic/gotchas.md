@@ -144,3 +144,37 @@ mdls -name kMDItemFNumber -name kMDItemExposureTimeSeconds \
 29. **本机 Lightroom 的 app 路径没有 `.app` 后缀**：实际是
     `/Applications/Adobe Lightroom Classic`。硬编码 `.app` 会误判"未安装"
     （`open -a "Adobe Lightroom Classic"` 两种写法都能用）。→ 两个路径都试。
+
+---
+
+## G. 2026-09-25 真机验证新发现
+
+30. **`remove_from_catalog` 在当前 Lightroom SDK 上无法实现。** 上游假设
+    `catalog:removePhoto(photo)` 存在，实测报
+    `attempt to call method 'removePhoto' (a nil value)`。
+    查过官方 API 文档：**`LrCatalog` 没有 `removePhoto`**，`LrPhoto` 也只有
+    `deleteSmartPreview` 与 `removeKeyword`，**没有任何办法把照片从目录里移除**。
+    → 现在这个 handler 明确报错并说明原因（保留 confirm 检查，让调用方先看到
+    「这是破坏性操作」而不是「功能不存在」）。
+    **要移除只能在 Lightroom 界面里手动做**：图库 → 选中 → Delete → 选「移除」
+    （不是「从磁盘删除」）。直写 `.lrcat` 绝对禁止。
+
+31. **桥接把工具结果放在文本块里，不是 `structuredContent`。**
+    `search_photos` 之类返回的 `structuredContent` 是空的，JSON 全在一个 text 块里
+    （只有 `get_photo_preview` 例外，它另带 `file_path`）。
+    → 解析结果要读文本块并 `JSON.parse`，不要指望 `structuredContent`。
+      `LightroomBridge.toText()` 已经处理了两种形态。
+
+32. **`20_split.py` 在零剔除时曾经什么都不做。** 提前退出的条件写成了
+    `if not to_move:`，于是「其余全部移进 `可导入/`」这条语义被整段跳过：
+    用户体检后说「全留」，结果目录没建、`stages.cull` 不记账，后面的导入只能
+    回退到源目录。危险之处在于**有剔除项时永远走不到那个分支**（75 张那批有 27 个
+    待剔），只有最省心的用法才会踩到。已修，并加了 `tests/test_split.py` 守住
+    「预演说的计划必须与真跑结果一致」。
+
+33. **裸 TCP 探测端口会把桥接搞得很难受。** 用 `connect` 之后立刻 `close` 去探
+    「Lightroom 在不在」，实测一次就把后续探测打失败（日志里能看到
+    `REQUEST socket connected` → `socket closed (client disconnected)`）。
+    → 判断链路一律**直接走一次真正的 MCP 握手**，不要裸连。
+      `scripts/live-check.mjs` 已按这条重写。
+

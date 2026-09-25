@@ -1590,7 +1590,7 @@ export const TOOL_CONTRACTS = [
     {
         name: "remove_from_catalog",
         luaHandler: "HandlerOrganization.removeFromCatalog",
-        description: "Remove photos from the Lightroom catalog. DESTRUCTIVE (undo is limited) but files on disk are NOT deleted — only the catalog entries. Requires confirm=true; the handler verifies the ids no longer resolve afterwards.",
+        description: "NOT SUPPORTED by the Lightroom SDK on this version: LrCatalog has no removePhoto method and LrPhoto has none either, so this tool intentionally does nothing and returns an error explaining why. Remove photos in Lightroom's UI instead (Library → select → Delete → Remove, not Delete from Disk). Files on disk are never touched.",
         inputSchema: {
             type: "object",
             additionalProperties: false,

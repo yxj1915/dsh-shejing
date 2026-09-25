@@ -30,6 +30,16 @@ const text = (value) => ({
   render: (_args, v) => [{ type: 'text', text: typeof v === 'string' ? v : String(v) }],
 })
 
+/** 把桥接返回里的 JSON 载荷解析出来。真实 handler 大多把结果放在文本块里。 */
+function parsePayload(result) {
+  try {
+    const payload = JSON.parse(LightroomBridge.toText(result))
+    return payload !== null && typeof payload === 'object' ? payload : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 桥接调用结果里有没有「其实失败了」。
  *
@@ -39,12 +49,7 @@ const text = (value) => ({
  */
 function isFailure(result) {
   if (result?.isError === true) return true
-  try {
-    const payload = JSON.parse(LightroomBridge.toText(result))
-    return payload !== null && typeof payload === 'object' && payload.success === false
-  } catch {
-    return false
-  }
+  return parsePayload(result)?.success === false
 }
 
 /** 写入类调用必须显式成功，否则抛错——绝不能把没写进去当成写进去了。 */
@@ -101,12 +106,13 @@ async function readJsonFile(file) {
 }
 
 /** 建收藏夹集 / 收藏夹并把可导入目录的照片放进去。失败不抛，只记进 failures。 */
-async function setUpCollections(bridge, { keepDir, set, collection, lines, failures }) {
+async function setUpCollections(bridge, { keepDir, set, collection, lines, failures, warnings }) {
   const added = []
   try {
     if (set !== undefined && set !== '') {
       const created = await bridge.call('create_collection_set', { name: set })
       lines.push('', '--- 收藏夹集 ---', LightroomBridge.toText(created))
+      if (isFailure(created)) failures.push(`建收藏夹集「${set}」失败`)
     }
     if (collection !== undefined && collection !== '') {
       const created = await bridge.call('create_collection', {
@@ -114,6 +120,7 @@ async function setUpCollections(bridge, { keepDir, set, collection, lines, failu
         ...(set === undefined || set === '' ? {} : { parent: set }),
       })
       lines.push('', '--- 收藏夹 ---', LightroomBridge.toText(created))
+      if (isFailure(created)) failures.push(`建收藏夹「${collection}」失败`)
       const paths = listPhotos(keepDir).map(name => path.join(keepDir, name))
       if (paths.length > 0) {
         const result = await bridge.call('add_to_collection', {
@@ -121,7 +128,20 @@ async function setUpCollections(bridge, { keepDir, set, collection, lines, failu
           photo_ids: paths,
         })
         lines.push(LightroomBridge.toText(result))
-        added.push(`${paths.length} 张 → ${collection}`)
+        // 以 Lightroom 自己报的 added 为准，不用「我传了几张」——
+        // handler 会返回 added 与 missing，传进去不等于加进去。
+        const payload = parsePayload(result)
+        const count = typeof payload?.added === 'number' ? payload.added : null
+        const missing = Array.isArray(payload?.missing) ? payload.missing.length : 0
+        if (isFailure(result) || count === null) {
+          failures.push(`加入收藏夹「${collection}」失败：${LightroomBridge.toText(result).slice(0, 160)}`)
+        } else {
+          added.push(`${count} 张 → ${collection}`)
+          if (count < paths.length) {
+            warnings.push(`收藏夹「${collection}」只加进去 ${count}/${paths.length} 张`
+              + `${missing > 0 ? `（Lightroom 报告 ${missing} 个 id 没找到）` : ''}`)
+          }
+        }
       }
     }
   } catch (error) {
@@ -456,7 +476,7 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
         lines.push('  （未处理重命名）')
       }
 
-      let imported = 0
+      let importedCount = null
       if (args.import === true) {
         // 只传 source_path：bridge 的 import_photos 不传 copy_to 才是原地引用。
         // （顺带记一笔：上游的 copy_to 参数在 HandlerImport.lua 里根本没实现。）
@@ -465,14 +485,23 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
           ...(args.collection === undefined ? {} : { collection_name: args.collection }),
         })
         lines.push('', '--- 导入 ---', LightroomBridge.toText(result))
-        imported = countPhotos(keepDir)
+        // 必须看返回值，并且用 **Lightroom 自己报的 imported 数量**。
+        // 原先记的是 countPhotos(keepDir)——那是「磁盘上有几个文件」，和导入成没成
+        // 毫无关系：导入整个失败时它照样等于文件夹里的张数，账本于是记下一个
+        // 看起来很成功的数字。
+        const payload = parsePayload(result)
+        if (isFailure(result) || typeof payload?.imported !== 'number') {
+          failures.push(`导入失败：${LightroomBridge.toText(result).replace(/\s+/g, ' ').slice(0, 200)}`)
+        } else {
+          importedCount = payload.imported
+        }
       } else {
         lines.push('  （未导入）')
       }
 
       if (args.collection_set !== undefined || args.collection !== undefined) {
         const added = await setUpCollections(bridge, {
-          keepDir, set: args.collection_set, collection: args.collection, lines, failures,
+          keepDir, set: args.collection_set, collection: args.collection, lines, failures, warnings,
         })
         lines.push(`  收藏夹：${added}`)
       }
@@ -481,12 +510,17 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
       const next = manifest ?? {}
       const stages = { ...(next.stages ?? {}) }
       stages.ingest = {
-        status: 'done',
+        status: failures.length === 0 ? 'done' : 'partial',
         at: new Date().toISOString().replace('T', ' ').slice(0, 19),
         keep_dir: keepDir,
         renamed: args.rename === true && args.rename_confirm === true,
-        imported: args.import === true,
-        photo_count: imported,
+        // 这三个是不同的东西，以前混成了一个，账本因此会说谎：
+        //   requested    —— 用户要求导入（意图）
+        //   imported     —— **Lightroom 自己报的**导入数量（事实）
+        //   photos_on_disk —— 可导入目录里有几个文件（和导入成没成无关）
+        requested: args.import === true,
+        imported: importedCount,
+        photos_on_disk: countPhotos(keepDir),
         collection_set: args.collection_set ?? null,
         collection: args.collection ?? null,
       }

@@ -39,6 +39,10 @@ const PARAM_GATED_TOOLS = new Set([
   'apply_auto',
   'set_noise_reduction',
   'ai_denoise',
+  // 这两个是**一次调用就批量**写调色参数的，漏掉它们等于留了一条一次成型的旁路：
+  // add_ai_mask {photo_ids:[25 张], adjustments:{...}} 一次就给 25 张加上遮罩与参数。
+  'add_ai_mask',
+  'add_range_mask',
 ])
 
 /** 这些工具写的是可逆标记，不属于参数门禁。留着明示边界。 */
@@ -357,6 +361,20 @@ export function registerGate(ctx, { log = () => {} } = {}) {
     const gate = seen.get(exec)
     if (gate !== undefined) {
       seen.delete(exec)
+      // **只在真的执行成功之后才入白名单。**
+      //
+      // DSH 在「用户拒绝」这条路径上也**会**跑 post-execute：deny 会被转成
+      // post-result，再走 finalizeScheduledExecution → postExecute
+      // （见 dsh-tools/src/index.ts 的 prepareExecution / serviceAsk）。
+      // 原先无条件记账，于是：
+      //   用户点了拒绝 → 这套参数进白名单 → 第二次同样的调用**不再问**就直接执行。
+      // 最坏的情况在没有审批通道的环境里（headless、子代理、approval unavailable）：
+      // serviceAsk 会**自动拒绝**第一次受管调用——那次拒绝就把参数放行了，重试即
+      // 无门禁。这等于凭空造出一条 force 旁路，正是这套门禁宣称不存在的东西。
+      if (result?.isError === true || result?.error !== undefined) {
+        log(`[shejing] 调用未成功（被拒或出错），指纹不入白名单：${gate.fingerprint}`)
+        return next()
+      }
       await ledger.approve(gate.fingerprint, {
         tool: gate.rawTool,
         summary: gate.summary,

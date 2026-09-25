@@ -24,6 +24,8 @@
     "lib",
     "lrbridge",
     "python",
+    "!python/__pycache__",
+    "!python/**/*.pyc",
     "skills",
     "docs",
     "cordis.patch.yml",

@@ -237,6 +237,26 @@ await gate(lrCall('apply_develop_preset', ['n1']), allow)
 assert.equal((await gate(lrCall('apply_develop_preset', ['n2']), allow)).kind, 'ask',
   '只是被拦下、尚未执行时不能进白名单')
 
+// **被拒绝的调用绝不能进白名单。**
+//
+// DSH 在拒绝路径上也会跑 post-execute（deny → post-result → postExecute，
+// 见 dsh-tools/src/index.ts）。无条件记账的话：用户点拒绝 → 参数进白名单 →
+// 第二次同样的调用不再问就执行；在没有审批通道的环境里 serviceAsk 会自动拒绝，
+// 于是第一次调用就把参数放行了——等于凭空多出一条 force 旁路。
+const deniedCall = lrCall('set_white_balance', ['d1', 'd2'])
+assert.equal((await gate(deniedCall, allow)).kind, 'ask', '前置：应当先被拦一次')
+await post[0](deniedCall, { isError: true, error: { message: 'the user rejected tool ...' } }, allow)
+const afterDenial = await gate(lrCall('set_white_balance', ['d1', 'd2']), allow)
+assert.equal(afterDenial.kind, 'ask', '被用户拒绝的调用绝不能进白名单（否则重试就无门禁）')
+console.log('门禁·拒绝不入白名单    → ask')
+
+// 执行失败（比如桥接挂了）同样不能入白名单
+const failedCall = lrCall('set_noise_reduction', ['f1', 'f2'])
+assert.equal((await gate(failedCall, allow)).kind, 'ask', '前置：应当先被拦一次')
+await post[0](failedCall, { isError: true }, allow)
+assert.equal((await gate(lrCall('set_noise_reduction', ['f1', 'f2']), allow)).kind, 'ask',
+  '执行失败的调用不能进白名单')
+
 // 用户同意 → post-execute 记账 → 同一套参数之后不再拦（白名单）
 const wlAsk = lrCall('set_noise_reduction', ['w2'])
 assert.equal((await gate(wlAsk, allow)).kind, 'ask', '白名单前置：应当先被拦一次')

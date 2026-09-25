@@ -29,8 +29,24 @@ export function batchIdFor(source) {
   return `${localDateStamp()}_${base}`
 }
 
+/**
+ * 批次 id 只允许是「一个普通目录名」。HTTP 路由与工具两条路共用这一条判定。
+ *
+ * 路由那边一直在校验，工具这条路却没有——而 batch_id 是模型可控的参数：
+ * `'../../../../tmp/evil'` 会让 path.join 把批次目录指到源目录树外面去，
+ * 然后在那边建目录、写账本，并把 manifest 里的 source_path 交给后续阶段。
+ */
+export function isValidBatchId(id) {
+  return typeof id === 'string' && id !== '' && id.length <= 200
+    && !id.includes('/') && !id.includes('\\') && !id.startsWith('.') && !id.includes('\0')
+}
+
 export function batchDirFor(source, explicitId) {
-  return path.join(batchesRoot(), explicitId ?? batchIdFor(source))
+  const id = explicitId ?? batchIdFor(source)
+  if (!isValidBatchId(id)) {
+    throw new Error(`非法批次 id：${JSON.stringify(id)}（不能含 / 或 \\，不能以 . 开头）`)
+  }
+  return path.join(batchesRoot(), id)
 }
 
 export async function ensureDir(dir) {

@@ -120,6 +120,56 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `${name} ok` }], structuredContent: { ok: true } }
   }
 
+  if (name === 'import_photos') {
+    // 真实 handler 的返回形状：{success, imported, message}。
+    // 导入了多少张由 Lightroom 自己数（这里就数源目录里的 RAW），
+    // 这正是我们要记进账本的那个数字——不能用「目标目录里有几个文件」代替。
+    const { readdirSync } = await import('node:fs')
+    const source = String(args.source_path ?? '')
+    let count = 0
+    try {
+      count = readdirSync(source).filter(f => /\.(arw|cr2|cr3|nef|dng|raf|orf|rw2|jpg|jpeg)$/iu.test(f)).length
+    } catch {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ success: false, error: `源目录不存在：${source}` }) }],
+        structuredContent: { success: false },
+      }
+    }
+    // SHEJING_FAKE_LR_IMPORT_FAIL=1：模拟「导入失败但 HTTP 层没事」——
+    // 真实 handler 失败时就是这样，不设 isError。
+    if (process.env.SHEJING_FAKE_LR_IMPORT_FAIL === '1') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'catalog is read-only' }) }],
+        structuredContent: { success: false, error: 'catalog is read-only' },
+      }
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ success: true, imported: count, message: `Imported ${count} photos` }) }],
+      structuredContent: { success: true, imported: count },
+    }
+  }
+
+  if (name === 'create_collection_set' || name === 'create_collection') {
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ success: true, name: args.name }) }],
+      structuredContent: { success: true, name: args.name },
+    }
+  }
+
+  if (name === 'add_to_collection') {
+    // SHEJING_FAKE_LR_COLLECTION_PARTIAL=1：模拟「只加进去一部分」。
+    const ids = Array.isArray(args.photo_ids) ? args.photo_ids : []
+    const added = process.env.SHEJING_FAKE_LR_COLLECTION_PARTIAL === '1' ? Math.max(0, ids.length - 1) : ids.length
+    const missing = ids.length - added
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ success: true, added, missing: ids.slice(added), message: `Added ${added} photos to collection (${missing} ids not found)` }),
+      }],
+      structuredContent: { success: true, added, missing },
+    }
+  }
+
   if (name === 'export_photos') {
     // 真的写出文件：归档工具会核对「目标目录里的实际文件数」。
     const { mkdirSync, writeFileSync } = await import('node:fs')

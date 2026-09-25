@@ -121,7 +121,10 @@ export async function syncLrplugin({ log = () => {} } = {}) {
 
   // 有差异 → 先备份将要被覆盖的文件，再写入。
   let backedUpTo
-  if (wasInstalled && changed.length > 0) {
+  // 备份的判据是「即将被覆盖的文件」，不是「Info.lua 在不在」。
+  // 原先由单个文件的存在与否决定要不要备份，而写入是无条件的：用户把 Info.lua
+  // 改名来停用插件（很常见）时，他手改过的 JSON.lua 会被直接覆盖且不留备份。
+  if (changed.length > 0) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     backedUpTo = path.join(SHEJING_HOME, 'backups', `lrplugin-${stamp}`)
     await mkdir(backedUpTo, { recursive: true })

@@ -114,8 +114,19 @@ export class LightroomBridge {
 
   /** 断线：清掉缓存的 client，让下一次调用重新连接。 */
   #drop(reason) {
-    if (this.#client !== null) this.#log(`[shejing] bridge 断开：${reason}`)
+    const client = this.#client
+    if (client !== null) this.#log(`[shejing] bridge 断开：${reason}`)
     this.#client = null
+    // **必须真的关掉子进程。** 只把引用丢掉的话，桥接进程还活着，而它仍握着
+    // ~/.config/lightroom-mcp/bridge-<port>.lock：下一个桥接要等 15 秒然后自己退出，
+    // 于是之后每一次 Lightroom 调用都会以「桥接无法启动，请确认 Lightroom 已打开」
+    // 失败——一句和真实原因完全无关的话——直到那个孤儿进程空闲 10 分钟自行让位。
+    // 触发条件很普通：任何一次客户端超时（桥接自己还在干活）。
+    if (client !== null) {
+      Promise.resolve()
+        .then(() => client.close())
+        .catch(() => {})
+    }
   }
 
   async #connect() {

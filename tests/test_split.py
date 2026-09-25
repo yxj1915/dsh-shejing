@@ -134,6 +134,77 @@ finally:
     shutil.rmtree(root_a, ignore_errors=True)
     shutil.rmtree(root_b, ignore_errors=True)
 
+# ---- 7. 目标已存在时**不覆盖**（第二张卡同名文件那种情况）
+root = make_dir(1)
+try:
+    os.makedirs(os.path.join(root, "非导入"))
+    with open(os.path.join(root, "非导入", "DSC0000.ARW"), "wb") as fh:
+        fh.write(b"OLD-PHOTO-FROM-CARD-1")
+    # make_dir 造的是 DSC0000.ARW
+    code, out, _ = run(root, "--reject", "DSC0000.ARW", "--confirm")
+    with open(os.path.join(root, "非导入", "DSC0000.ARW"), "rb") as fh:
+        kept = fh.read()
+    case("目标已存在时不覆盖旧文件", kept == b"OLD-PHOTO-FROM-CARD-1", kept[:30])
+    case("目标已存在时源文件留在原地", os.path.exists(os.path.join(root, "DSC0000.ARW")))
+    case("跳过时说清了原因", "没有覆盖" in out or "已有同名文件" in out)
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+root = make_dir(1)
+try:
+    os.makedirs(os.path.join(root, "可导入"))
+    with open(os.path.join(root, "可导入", "DSC0000.ARW"), "wb") as fh:
+        fh.write(b"EARLIER-KEEP")
+    code, out, _ = run(root, "--confirm")
+    with open(os.path.join(root, "可导入", "DSC0000.ARW"), "rb") as fh:
+        kept = fh.read()
+    case("可导入/ 里已存在同名文件时也不覆盖", kept == b"EARLIER-KEEP", kept[:30])
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+# ---- 8. 剔单项必须是纯粹的文件名，不能是路径
+# 注意：每条命令都用**独立的**源目录——前一条会真的把照片搬走。
+root = make_dir(2)
+try:
+    os.makedirs(os.path.join(root, "可导入"))
+    code, out, _ = run(root, "--reject", "可导入", "--confirm")
+    case("目录名被识别为非法条目", "不是本次要处理的照片" in out)
+    case("目录没被搬走", os.path.isdir(os.path.join(root, "可导入")))
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+root = make_dir(2)
+try:
+    # 在源目录**外面**放一个同名文件：`../outside.ARW` 这条路径曾经会被 rename
+    # 进源目录，下一次拆分就当成本批照片送进 Lightroom。
+    outside = os.path.join(os.path.dirname(root), "outside.ARW")
+    with open(outside, "wb") as fh:
+        fh.write(b"MUST-NOT-BE-DRAGGED-IN")
+    code, out, _ = run(root, "--reject", "../outside.ARW", "--confirm")
+    case("../ 路径被识别为非法条目", "不是纯粹的文件名" in out)
+    case("源目录外的文件没有被拖进来", not os.path.exists(os.path.join(root, "outside.ARW")))
+    case("源目录外的文件原地未动", os.path.exists(outside))
+    # 零个有效剔单项 → 两张都该进 可导入/（这正是「全留」的语义）
+    case("零有效剔单项时两张都进 可导入/", len(listing(root, "可导入") or []) == 2,
+         str(listing(root, "可导入")))
+    case("照片总数守恒", (len(listing(root, "可导入") or []) + len(listing(root, "非导入") or [])) == 2)
+    os.remove(outside)
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+# ---- 9. 大小写不一致时，剔除的必须是磁盘上那一张，其余照常进 可导入/
+if os.path.exists("/System/Library/CoreServices") or sys.platform == "darwin":
+    root = make_dir(2)
+    try:
+        code, out, _ = run(root, "--reject", "dsc0001.ARW", "--confirm")
+        case("大小写不同也认得是同一张", listing(root, "非导入") == ["DSC0001.ARW"],
+             str(listing(root, "非导入")))
+        case("没被剔的那张进了 可导入/", listing(root, "可导入") == ["DSC0000.ARW"],
+             str(listing(root, "可导入")))
+        case("根目录清空", len(in_root(root)) == 0)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
 print()
 if FAILURES:
     for name in FAILURES:

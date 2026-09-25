@@ -74,6 +74,20 @@ def main():
         stamped.append(dict(name=f, path=path, when=when, source=source))
     stamped.sort(key=lambda x: (x["when"] is None, x["when"] or datetime.min))
 
+    # 先算出所有目标名，再统一查重——**这里是会丢照片的地方**。
+    #
+    # 原来的写法对每个 item 单独查一次 os.path.exists，而真正的 rename 要等到最后
+    # 才做。于是两个 item 算出同一个目标名时，两次存在性检查都通过、都进了 plans，
+    # 第二次 os.rename 就把第一张**覆盖掉**。POSIX 的 rename 是静默替换：不报错，
+    # 没有备份，照片就没了。
+    #
+    # 默认模板 {date}_{name} 就能触发：`2024-05-01_X.ARW` 与 `X.ARW` 同一天拍摄时
+    # 都会算成 `2024-06-01_X.ARW`——:80-82 剥日期前缀正是为了不改出双日期，副作用
+    # 就是让这两个撞在一起。
+    #
+    # 目标名撞上「别的 item 的现有文件名」这种情况由 os.path.exists 兜住（那个文件
+    # 此刻还在）。真正漏的只有「两个计划指向同一个新名字」。
+    taken = {}   # target → 第一个占用它的旧名
     plans, skipped, conflicts = [], [], []
     for seq, item in enumerate(stamped, 1):
         base, ext = os.path.splitext(item["name"])
@@ -90,9 +104,13 @@ def main():
         if target == item["name"]:
             skipped.append(item["name"])
             continue
-        if os.path.exists(os.path.join(src, target)):
-            conflicts.append((item["name"], target))
+        if target in taken:
+            conflicts.append((item["name"], target, "与 %s 算出了同一个目标名" % taken[target]))
             continue
+        if os.path.exists(os.path.join(src, target)):
+            conflicts.append((item["name"], target, "目标名已存在"))
+            continue
+        taken[target] = item["name"]
         plans.append((item["name"], target, item["source"]))
 
     print("① 证据")
@@ -103,9 +121,10 @@ def main():
     for old, new, source in plans:
         print("     %s  →  %s   （时间源：%s）" % (old, new, source))
     if conflicts:
-        print("  ⚠️ 冲突（目标名已存在，不会覆盖）：")
-        for old, new in conflicts:
-            print("     %s  →  %s" % (old, new))
+        print("  ⚠️ 冲突（不会覆盖，也不会改名）：")
+        for old, new, why in conflicts:
+            print("     %s  →  %s   （%s）" % (old, new, why))
+        print("     换个模板（比如带上 {time} 或 {seq}）通常就能避开。")
 
     if not plans:
         print("\n无需改名。")
@@ -119,14 +138,28 @@ def main():
         return 0
 
     done = 0
+    failed = 0
     for old, new, _ in plans:
+        source_path = os.path.join(src, old)
+        target_path = os.path.join(src, new)
+        # 执行前**再查一次**。计划是刚刚算的，但文件系统可能已经变了；而 os.rename
+        # 在 POSIX 上会静默替换已存在的目标——覆盖掉就是一张照片没了，所以宁可跳过。
+        if os.path.exists(target_path):
+            print("  跳过 %s → %s：目标已存在（不覆盖）" % (old, new))
+            failed += 1
+            continue
+        if not os.path.exists(source_path):
+            print("  跳过 %s → %s：源文件已不在" % (old, new))
+            failed += 1
+            continue
         try:
-            os.rename(os.path.join(src, old), os.path.join(src, new))
+            os.rename(source_path, target_path)
             done += 1
         except OSError as exc:
             print("  改名失败 %s → %s：%s" % (old, new, exc))
-    print("\n已改名 %d 张。" % done)
-    return 0 if done == len(plans) else 1
+            failed += 1
+    print("\n已改名 %d 张%s。" % (done, "" if failed == 0 else "，跳过 %d 张" % failed))
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":

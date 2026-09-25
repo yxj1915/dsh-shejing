@@ -155,21 +155,29 @@ function CullTab(props) {
           h('strong', null, `${group.count} 张`), ' ',
           h('span', { style: styles.badge }, group.kind),
           group.evSpread === null ? null : h('span', { style: styles.badge }, `曝光跨度 ${group.evSpread} 档`),
-          group.reliable ? null : h('span', { ...styles, style: { ...styles.badge, ...styles.warn } }, '判断不可靠，请复核')),
+          group.reliable ? null : h('span', { style: { ...styles.badge, ...styles.warn } }, '判断不可靠，请复核')),
         h('span', { style: { ...styles.muted, fontSize: 12 } },
           `${group.frames[0]?.name ?? ''} → ${group.frames[group.frames.length - 1]?.name ?? ''}`)),
       h('div', { style: { ...styles.frameRow, marginTop: 8 } }, group.frames.map(frame => {
         const isKeep = frame.name === group.keep
         const state = props.marks[frame.name]
-        const rejected = state === undefined ? !isKeep : state === false
+        // marks 里存的是 **keep**（见 App 的 setMarks），不是 rejected。
+        //
+        // 这里曾经写成 `const rejected = state === undefined ? !isKeep : state === false`
+        // 然后回调 `onToggle(name, !rejected)` —— 而 `!rejected` 恰好等于当前的 keep，
+        // 于是**每次点击都存回同一个值**，切换是个永久空操作：默认要留的点三次还是
+        // 「留」，默认要剔的点两次还是「剔」。更糟的是上面「你标了 N 张要剔」那张卡片
+        // 列的是**工具的默认建议**而不是用户的决定，用户会以为自己的编辑被带回了对话。
+        const keep = state === undefined ? isKeep : state === true
+        const rejected = !keep
         return h('div', {
           key: frame.name,
           style: { ...styles.frame, ...(rejected ? styles.frameReject : styles.frameKeep) },
-          onClick: () => props.onToggle(frame.name, !rejected),
+          onClick: () => props.onToggle(frame.name, rejected),
           title: '点击切换留/剔',
         },
           frame.small === null
-            ? h('div', { style: { height: 82, display: 'flex', alignItems: 'center', justifyContent: 'center' }, ...styles.muted }, '无缩略图')
+            ? h('div', { style: { height: 82, display: 'flex', alignItems: 'center', justifyContent: 'center', ...styles.muted } }, '无缩略图')
             : h('img', { src: fileUrl(frame.small, props.nonce), style: { ...styles.thumb, width: '100%', height: 82 } }),
           h('div', { style: { fontSize: 11, marginTop: 4, ...styles.code } }, frame.name.replace(/^\d{4}-\d{2}-\d{2}_/, '')),
           h('div', { style: { fontSize: 11 } },

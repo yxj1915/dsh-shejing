@@ -13,7 +13,13 @@
  *
  * 用独立的 local store，避免动到用户的共享 pnpm store。
  *
- * 用法：node scripts/test-packed-install.mjs
+ * 用法：
+ *   node scripts/test-packed-install.mjs                     装本地 tarball
+ *   node scripts/test-packed-install.mjs --registry [版本]    从 npm 装已发布的包
+ *
+ * `--registry` 模式复现的正是**桌面客户端 GUI 插件管理器**的那条路
+ * （它内部就是 `pnpm add <包名> --save-exact`，从 registry 解析）。tarball 模式
+ * 验的是打包内容，registry 模式验的是「发布出去之后真的装得上」——两者都要过。
  */
 
 import { spawn } from 'node:child_process'
@@ -29,6 +35,13 @@ const CLI = path.join(RUNTIME, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'li
 const HOME_DIR = path.join(ROOT, '.dev', 'packed-home')
 const STORE = path.join(ROOT, '.dev', 'pnpm-store')
 const PORT = 19390
+
+/** --registry [版本]：从 npm 装已发布的包，复现桌面端 GUI 那条路。 */
+const registryFlag = process.argv.indexOf('--registry')
+const fromRegistry = registryFlag !== -1
+const registryVersion = fromRegistry ? process.argv[registryFlag + 1] : undefined
+let registrySpec = ''
+let tarballPath = ''
 
 if (!existsSync(path.join(RUNTIME, 'dsh'))) {
   console.error(`找不到隔离运行时：${RUNTIME}`)
@@ -54,11 +67,21 @@ function run(command, args, options = {}) {
   })
 }
 
-console.log('打包产物安装验证\n')
+console.log(fromRegistry ? '从 registry 安装验证\n' : '打包产物安装验证\n')
 
 /* ---------------------------------------------------------------- 1. 打包 */
 
-console.log('—— ① 打包 ——')
+if (fromRegistry) {
+  console.log('—— ① 本地版本 ——')
+  const local = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  const spec = registryVersion === undefined ? local.name : `${local.name}@${registryVersion}`
+  step('本地版本', true, `${local.name}@${local.version}`)
+  step('将要安装的 spec', true, spec)
+  const probe = await fetch(`https://registry.npmjs.org/${local.name}`)
+  step('registry 上能找到这个包', probe.ok, probe.ok ? '' : `HTTP ${probe.status}`)
+  registrySpec = spec
+} else {
+  console.log('—— ① 打包 ——')
 for (const file of readdirSync(path.join(ROOT, '.dev')).filter(f => f.endsWith('.tgz'))) {
   await rm(path.join(ROOT, '.dev', file), { force: true })
 }
@@ -70,8 +93,9 @@ const tar = await run(process.execPath, [pnpm, 'pack', '--pack-destination', '.d
 step('pnpm pack 成功', tar.code === 0)
 const tarball = readdirSync(path.join(ROOT, '.dev')).filter(f => f.endsWith('.tgz')).sort()[0]
 if (tarball === undefined) { console.error('没生成 tarball'); process.exit(1) }
-const tarballPath = path.join(ROOT, '.dev', tarball)
+tarballPath = path.join(ROOT, '.dev', tarball)
 step('tarball 生成', true, `${tarball}（${(readFileSync(tarballPath).length / 1024).toFixed(0)} KB）`)
+}
 
 /* ---------------------------------------------------------------- 2. 装进全新 profile */
 
@@ -81,8 +105,9 @@ await mkdir(HOME_DIR, { recursive: true })
 const env = { ...process.env, DSH_HOME: HOME_DIR, PATH: `${path.join(ROOT, '.dev', 'bin')}:${process.env.PATH ?? ''}` }
 
 await run(process.execPath, [CLI, '--profile', 'web', '--help'], { env })
-const added = await run(process.execPath, [CLI, 'plugin', '--profile', 'web', 'add', tarballPath, '--store-dir', STORE], { env })
-step('dsh plugin add 成功', added.code === 0, added.stdout.trim().split('\n').slice(-1)[0])
+const installSpec = fromRegistry ? registrySpec : tarballPath
+const added = await run(process.execPath, [CLI, 'plugin', '--profile', 'web', 'add', installSpec, '--store-dir', STORE], { env })
+step(`dsh plugin add ${fromRegistry ? '（从 registry）' : ''}成功`, added.code === 0, added.stdout.trim().split('\n').slice(-1)[0])
 
 const profilePkg = JSON.parse(await readFile(path.join(HOME_DIR, 'profiles', 'web', 'package.json'), 'utf8'))
 step('自动登记为 profile 层', profilePkg.dsh?.profile?.bundles?.includes('dsh-shejing') === true)

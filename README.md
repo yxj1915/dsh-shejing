@@ -99,9 +99,13 @@ node scripts/regression.mjs <cloned-batch-dir>   # end-to-end on a real batch (~
 ```
 
 `scripts/regression.mjs` drives the real tool implementations against a cloned batch, so it covers
-parameter translation, path resolution and ledger writes — not just the Python scripts. It needs
-`DSH_HOME` set so it never writes into your real `~/.dsh`. Pass `--reuse` to skip the slow checkup
-stage and re-test only the downstream steps.
+parameter translation, path resolution and ledger writes — not just the Python scripts. It walks
+eight steps: checkup → cull dry-run → cull → verify → archive plan → organize rename (dry/real) →
+retrospective (dry/real) → graceful degradation when Lightroom is unavailable. Only "actually
+export" and "actually write develop settings" need Lightroom; everything else verifies without it.
+
+It needs `DSH_HOME` set so it never writes into your real `~/.dsh`. Pass `--reuse` to skip the slow
+checkup stage and re-test only the downstream steps.
 
 Design decisions and the reasoning behind them are in [docs/DESIGN.md](docs/DESIGN.md).
 

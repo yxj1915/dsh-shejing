@@ -415,6 +415,28 @@ if (noConnection) {
   const { PLUGIN_VERSION } = await import('../src/version.mjs')
   const pkgVersion = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')).version
   assert.equal(PLUGIN_VERSION, pkgVersion, 'PLUGIN_VERSION 应当等于 package.json 的版本')
+
+  /*
+   * 上面那条是**同义反复**：两边读的是同一个文件，改了什么它都跟着一起变。
+   * 审计员的变异 20 把 version.mjs 改成硬编码 `return '0.1.0'`，测试全绿——
+   * 因为真版本恰好就是 0.1.0，硬编码与真实读取给出同一个值。
+   *
+   * 所以这里验证**机制**而不是数值：把 version.mjs 原样复制到临时目录，旁边放一份
+   * 版本号是哨兵值的 package.json，再 import 那份副本。它会按 import.meta.url 找到
+   * 旁边的 package.json——只有真的读了它，才可能返回哨兵值。
+   */
+  {
+    const probe = path.join(dshHome, 'version-probe')
+    await mkdir(path.join(probe, 'src'), { recursive: true })
+    await writeFile(path.join(probe, 'src', 'version.mjs'),
+      await readFile(path.join(ROOT, 'src', 'version.mjs'), 'utf8'))
+    await writeFile(path.join(probe, 'package.json'),
+      `${JSON.stringify({ name: 'probe', version: '9.9.9-sentinel' })}\n`)
+    const { PLUGIN_VERSION: probed } = await import(`file://${path.join(probe, 'src', 'version.mjs')}`)
+    assert.equal(probed, '9.9.9-sentinel',
+      `version.mjs 必须真的去读它旁边的 package.json（硬编码会返回 ${probed}）`)
+    console.log('版本机制     : 从包自己的 package.json 读 ✓（哨兵值 ' + probed + '）')
+  }
   assert.equal(probe.plugin.version, pkgVersion, '探针报告的版本应当是包的真实版本')
 }
 

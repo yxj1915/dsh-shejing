@@ -59,6 +59,44 @@ def num(v):
         return None
 
 
+def group_bursts(known, window, hash_max):
+    """把按时间排好序的帧分成连拍/近似重复组。
+
+    **保证是划分**：一帧最多属于一组，各组两两不相交。
+
+    这个保证不是可有可无的：分组一旦重叠，同一帧会带着互相矛盾的建议出现两次
+    （在某组是「建议保留」、在另一组是「建议剔除」），而待剔名单会出现重复项，
+    于是「传了 N 个名字只剔掉 N-1 张」这种错误就静默发生。
+    端到端回归正是这样抓到的——28 个名字只有 27 个唯一值。
+
+    贪婪扫描：按时间取一个未占用的种子，向后在时间窗口内找哈希相近的帧；
+    种子与成员都必须未占用。
+    """
+    for it in known:
+        # 已经有哈希就不重算——这让分组逻辑可以用合成数据单测（不必真解码图片）。
+        if it.get("hash") is None and it.get("small"):
+            it["hash"] = dhash(it["small"])
+
+    used, groups = set(), []
+    for i, a in enumerate(known):
+        if i in used or a["hash"] is None:
+            continue
+        grp, j = [a], i + 1
+        while j < len(known):
+            b = known[j]
+            if (b["time"] - a["time"]).total_seconds() > window:
+                break
+            if j not in used and b["hash"] is not None and \
+                    int(np.count_nonzero(a["hash"] != b["hash"])) <= hash_max:
+                grp.append(b)
+                used.add(j)
+            j += 1
+        if len(grp) > 1:
+            used.add(i)
+            groups.append(sorted(grp, key=lambda x: x["time"]))
+    return groups
+
+
 def ev_rel(exposure_seconds, fnumber, iso):
     """相对曝光（档）。值越大 = 曝光越多。"""
     if not exposure_seconds or not fnumber:
@@ -225,26 +263,7 @@ def main():
     # ---- 连拍分组：时间窗口 + 感知哈希
     known = [it for it in items if it["time"]]
     known.sort(key=lambda x: x["time"])
-    for it in known:
-        it["hash"] = dhash(it["small"]) if it["small"] else None
-
-    used, groups = set(), []
-    for i, a in enumerate(known):
-        if i in used or a["hash"] is None:
-            continue
-        grp, j = [a], i + 1
-        while j < len(known):
-            b = known[j]
-            if (b["time"] - a["time"]).total_seconds() > args.window:
-                break
-            if b["hash"] is not None and \
-                    int(np.count_nonzero(a["hash"] != b["hash"])) <= args.hash_max:
-                grp.append(b)
-                used.add(j)
-            j += 1
-        if len(grp) > 1:
-            used.add(i)
-            groups.append(sorted(grp, key=lambda x: x["time"]))
+    groups = group_bursts(known, args.window, args.hash_max)
 
     # ---- 每组：类型判定 + 保留建议
     report_groups = []

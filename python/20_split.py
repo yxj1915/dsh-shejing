@@ -27,7 +27,10 @@ RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf", ".orf", ".rw2",
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("source")
-    ap.add_argument("--reject", nargs="*", default=[])
+    # action="extend"：`--reject a --reject b` 与 `--reject a b` 都能累积。
+    # 只有 nargs="*" 时，重复出现的 flag **只保留最后一次**——那会让
+    # 「传了 28 个名字、只剔掉 1 张」这种错误静默发生（端到端回归抓到过）。
+    ap.add_argument("--reject", nargs="*", action="extend", default=[])
     ap.add_argument("--reject-from", default=None, help="JSON 文件，内容是待剔文件名数组")
     ap.add_argument("--manifest", default=None, help="批次 manifest.json，用于记账")
     ap.add_argument("--confirm", action="store_true", help="真的执行移动（默认只预演）")

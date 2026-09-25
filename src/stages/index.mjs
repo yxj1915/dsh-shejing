@@ -222,7 +222,10 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
       if (source === null) return `无法确定源文件夹：${batchDir}`
 
       const cli = [source, '--manifest', path.join(batchDir, 'manifest.json')]
-      for (const name of args.reject ?? []) cli.push('--reject', name)
+      const rejectNames = Array.isArray(args.reject) ? args.reject : []
+      // 一个 flag 带全部名字。脚本侧也做了 action="extend" 兜底，
+      // 但 argv 少 28 个 `--reject` 更清楚，也少一处能出错的地方。
+      if (rejectNames.length > 0) cli.push('--reject', ...rejectNames)
       if (args.confirm === true) cli.push('--confirm')
 
       log(`[shejing] 剔除 ${source}（${(args.reject ?? []).length} 张，confirm=${args.confirm === true}）`)

@@ -26,6 +26,8 @@ if (source === undefined || !existsSync(source)) {
 }
 const batchIdFlag = process.argv.indexOf('--batch-id')
 const batchId = batchIdFlag === -1 ? undefined : process.argv[batchIdFlag + 1]
+/** 复用已有账本，跳过体检（体检要十几分钟，改下游逻辑时不必每次重跑）。 */
+const reuse = process.argv.includes('--reuse')
 
 const dshHome = process.env.DSH_HOME
 if (dshHome === undefined) {
@@ -75,12 +77,17 @@ const call = async (name, args) => {
 /* ---------------------------------------------------------------- 1. 体检 */
 
 step('① 体检（shejing_checkup）')
-const checkupOut = await call('shejing_checkup', { source, ...(batchId === undefined ? {} : { batch_id: batchId }) })
-const checkupFirst = checkupOut.split('\n').slice(0, 6).join('\n')
-console.log(checkupFirst)
-
-const batchDir = path.join(dshHome, 'shejing', 'batches', batchId ?? readdirSync(path.join(dshHome, 'shejing', 'batches'))[0])
+const batchDir = path.join(dshHome, 'shejing', 'batches',
+  batchId ?? readdirSync(path.join(dshHome, 'shejing', 'batches'))[0])
 const manifestPath = path.join(batchDir, 'manifest.json')
+
+if (reuse) {
+  console.log(`   跳过（--reuse）：复用 ${manifestPath}`)
+} else {
+  const checkupOut = await call('shejing_checkup', { source, ...(batchId === undefined ? {} : { batch_id: batchId }) })
+  console.log(checkupOut.split('\n').slice(0, 6).join('\n'))
+}
+
 assert.ok(existsSync(manifestPath), '账本没写出来')
 
 const manifest = JSON.parse(await (await import('node:fs/promises')).readFile(manifestPath, 'utf8'))
@@ -106,14 +113,27 @@ assert.ok(withEv > 0, '⚠️ 一张都没读到曝光数据——EXIF 解析可
 /* ---------------------------------------------------------------- 2. 剔除预演 */
 
 step('② 剔除预演（shejing_cull 不带 confirm）')
-const reject = []
+// 分组必须是**划分**：一帧最多属于一组。否则待剔名单会出现重复项，
+// 「传了 N 个名字只剔掉 N-1 张」这种错误就会静默发生。
+const frameOwner = new Map()
+for (const [index, group] of checkup.groups.entries()) {
+  for (const frame of group.frames) {
+    assert.ok(!frameOwner.has(frame.name),
+      `${frame.name} 同时属于第 ${frameOwner.get(frame.name)} 组和第 ${index} 组——分组不是划分`)
+    frameOwner.set(frame.name, index)
+  }
+}
+console.log(`   分组是划分：${frameOwner.size} 帧分属 ${checkup.groups.length} 组，无重叠 ✓`)
+
+const rejectSet = new Set()
 for (const group of checkup.groups) {
   // 只有「连拍」才进剔除建议；包围曝光与疑似堆栈一律不碰。
   if (group.kind !== '连拍') continue
   for (const frame of group.frames) {
-    if (frame.name !== group.keep) reject.push(frame.name)
+    if (frame.name !== group.keep) rejectSet.add(frame.name)
   }
 }
+const reject = [...rejectSet]
 console.log(`   建议剔除 ${reject.length} 张（只取连拍组里的非保留帧）`)
 
 const keepDir = path.join(source, '可导入')

@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
+import { PLUGIN_VERSION } from '../version.mjs'
+
 /**
  * 我们自带的 bridge 入口（相对本文件定位，不依赖任何环境变量）。
  *
@@ -127,7 +129,7 @@ export class LightroomBridge {
         env: childEnv(),
         stderr: 'pipe',
       })
-      const client = new Client({ name: 'dsh-shejing', version: '0.1.0' })
+      const client = new Client({ name: 'dsh-shejing', version: PLUGIN_VERSION })
       try {
         await client.connect(transport)
       } catch (error) {

@@ -27,15 +27,7 @@ import process from 'node:process'
 import { batchesRoot, listBatches, readManifest } from './batches.mjs'
 import { BRIDGE_ENTRY } from './lr/bridge.mjs'
 import { installedLrpluginDir, SHEJING_HOME } from './lr/install.mjs'
-
-/** 插件版本。读包自己的 package.json，避免和发布版本漂移。 */
-function pluginVersion() {
-  try {
-    return process.env.npm_package_version ?? '0.1.0'
-  } catch {
-    return '0.1.0'
-  }
-}
+import { PLUGIN_VERSION } from './version.mjs'
 
 export const PROBE_PATH = '/api/shejing/probe'
 export const BATCHES_PATH = '/api/shejing/batches'
@@ -133,7 +125,7 @@ async function probePayload({ bridge, lrToolCount }) {
   return {
     ok: true,
     now: new Date().toISOString(),
-    plugin: { name: 'dsh-shejing', version: pluginVersion() },
+    plugin: { name: 'dsh-shejing', version: PLUGIN_VERSION },
     dshHome: process.env.DSH_HOME ?? null,
     shejingHome: SHEJING_HOME,
     lrplugin: installedLrpluginDir(),

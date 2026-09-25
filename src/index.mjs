@@ -24,6 +24,7 @@ import { BUNDLED_LRPLUGIN, SHEJING_HOME, installedLrpluginDir, recordLrpluginSyn
 import { registerSkill } from './skill.mjs'
 import { registerStageTools } from './stages/index.mjs'
 import { registerGate } from './gate/index.mjs'
+import { PLUGIN_VERSION } from './version.mjs'
 import { registerRoutes } from './routes.mjs'
 
 /** Cordis 插件名，同时是 cordis.patch.yml 里那一行引用的包名。 */
@@ -84,7 +85,7 @@ export function apply(ctx, config = {}) {
             at: new Date().toISOString(),
             pid: process.pid,
             dshHome: process.env.DSH_HOME ?? null,
-            pluginVersion: '0.1.0',
+            pluginVersion: PLUGIN_VERSION,
             lrTools: lrTools.map(t => t.tool),
             stageTools,
           }, null, 2)}\n`,

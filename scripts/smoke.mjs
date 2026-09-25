@@ -7,8 +7,11 @@
  */
 
 import assert from 'node:assert/strict'
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const noSync = process.argv.includes('--no-sync')
 /** 模拟桌面 composition 里某些服务不存在的场景：插件必须照常激活，只是少注册路由。 */
@@ -201,6 +204,13 @@ if (noConnection) {
   assert.equal(probe.ok, true)
   assert.equal(probe.lrToolCount, 56)
   assert.ok(Array.isArray(probe.batches))
+  // 版本号必须来自包自己的 package.json。曾经用 process.env.npm_package_version，
+  // 那个变量在 DSH 进程里根本不存在，于是永远回退到硬编码字面量——改了版本号
+  // 面板上显示的还是旧的，属于「不影响功能所以没人发现」的偏差。
+  const { PLUGIN_VERSION } = await import('../src/version.mjs')
+  const pkgVersion = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')).version
+  assert.equal(PLUGIN_VERSION, pkgVersion, 'PLUGIN_VERSION 应当等于 package.json 的版本')
+  assert.equal(probe.plugin.version, pkgVersion, '探针报告的版本应当是包的真实版本')
 }
 
 // --- Python 运行时 ---

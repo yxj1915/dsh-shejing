@@ -4,6 +4,7 @@
  *   node scripts/test.mjs            跑全部
  *   node scripts/test.mjs smoke      只跑插件注册面与门禁
  *   node scripts/test.mjs client     只跑浏览器半边的构建与渲染检查
+ *   node scripts/test.mjs bridge     只跑 LR 通道（用假桥接）
  *   node scripts/test.mjs python     只跑 Python 侧（分组算法等）
  *
  * 端到端回归（scripts/regression.mjs）不在这里跑——它要十几分钟并且需要一份
@@ -49,6 +50,11 @@ if (only === undefined || only === 'client') {
   } else {
     results.push({ label: 'JS · 浏览器半边渲染', code: 1 })
   }
+}
+
+if (only === undefined || only === 'bridge') {
+  results.push(await run(process.execPath,
+    [path.join(ROOT, 'scripts', 'test-bridge.mjs')], 'JS · LR 通道（假桥接）'))
 }
 
 if (only === undefined || only === 'python') {

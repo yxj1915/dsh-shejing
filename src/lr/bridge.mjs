@@ -21,8 +21,17 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
-/** 我们自带的 bridge 入口（相对本文件定位，不依赖任何环境变量）。 */
-export const BRIDGE_ENTRY = fileURLToPath(new URL('../../lrbridge/dist/index.js', import.meta.url))
+/**
+ * 我们自带的 bridge 入口（相对本文件定位，不依赖任何环境变量）。
+ *
+ * 可用 `SHEJING_BRIDGE_ENTRY` 覆盖——两个用途：
+ *   1. 测试时指向一个假的 MCP 服务器，好把客户端这套握手/超时/降级逻辑测起来；
+ *   2. 用户想改用别的桥接实现（比如上游的 `@pired/lightroom-mcp`）时不必改包。
+ */
+export const BRIDGE_ENTRY = process.env.SHEJING_BRIDGE_ENTRY !== undefined
+  && process.env.SHEJING_BRIDGE_ENTRY !== ''
+  ? process.env.SHEJING_BRIDGE_ENTRY
+  : fileURLToPath(new URL('../../lrbridge/dist/index.js', import.meta.url))
 
 /**
  * 每次调用的客户端超时。必须**大于** bridge 自己的 ACTION_TIMEOUTS，
@@ -53,6 +62,26 @@ export class LightroomUnavailable extends Error {
     this.name = 'LightroomUnavailable'
     this.cause = cause
   }
+}
+
+/**
+ * 显式转发给 bridge 子进程的环境变量。
+ *
+ * MCP SDK 的 StdioClientTransport 只继承一份「安全」清单
+ * （POSIX 上是 HOME/LOGNAME/PATH/SHELL/TERM/USER），其余一律不传。
+ * 那意味着用户在 DSH 环境里设的 `LIGHTROOM_MCP_REQUEST_PORT` 之类**会被静默丢掉**
+ * ——「明明设了端口却不起作用」是最难查的一类怪事。
+ *
+ * 所以这里显式转发 bridge 自己的配置项（LIGHTROOM_MCP_*）与我们自己的
+ * 覆盖项（SHEJING_*）。HOME 由 SDK 的默认清单提供，token 路径不受影响。
+ */
+function childEnv() {
+  const env = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (key.startsWith('LIGHTROOM_MCP_') || key.startsWith('SHEJING_')) env[key] = value
+  }
+  return env
 }
 
 export class LightroomBridge {
@@ -95,6 +124,7 @@ export class LightroomBridge {
       const transport = new StdioClientTransport({
         command: process.execPath,
         args: [BRIDGE_ENTRY],
+        env: childEnv(),
         stderr: 'pipe',
       })
       const client = new Client({ name: 'dsh-shejing', version: '0.1.0' })

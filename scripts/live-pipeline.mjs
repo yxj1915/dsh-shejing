@@ -53,6 +53,27 @@ if (!process.argv.includes('--skip-clone')) {
   await rm(path.join(dshHome, 'shejing', 'gates'), { recursive: true, force: true })
 }
 
+/* ---------------------------------------------------------------- 前置检查 */
+
+{
+  const net = await import('node:net')
+  const listening = await new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port: Number(process.env.LIGHTROOM_MCP_REQUEST_PORT ?? 58763) })
+    const done = (v) => { socket.removeAllListeners(); socket.destroy(); resolve(v) }
+    socket.setTimeout(1000)
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false))
+    socket.once('error', () => done(false))
+  })
+  if (!listening) {
+    console.error('Lightroom 没开、或插件没在 Start Server。先：')
+    console.error('  1. 打开 Adobe Lightroom Classic，等增效工具加载完（约 1.5 分钟）')
+    console.error('  2. 文件 ▸ 增效工具管理器 ▸ Lightroom MCP ▸ Start Server')
+    console.error('  3. 再跑 node scripts/live-check.mjs 确认链路，然后跑本脚本')
+    process.exit(2)
+  }
+}
+
 /* ---------------------------------------------------------------- 假上下文（真桥接） */
 
 const tools = new Map()
@@ -72,22 +93,25 @@ const mod = await import('../src/index.mjs')
 mod.apply(ctx, {})
 
 const allow = async () => ({ kind: 'allow' })
-/** 走真实流程；门禁弹两次就自动批准两次（本次运行你已经同意过写入验证）。 */
+/**
+ * 走真实流程。门禁只**观察**一次：它说 ask 就表示「这里需要用户点头」，
+ * 而本次运行你已经同意过写入验证，所以继续执行——这正是 DSH 里用户点了同意
+ * 之后发生的事（注册表用同一个 exec 继续执行，而不是重新问一遍）。
+ *
+ * 注意不能重试钩子：`shejing_cull` 这类门禁是**每次调用都要问**的，不是白名单，
+ * 重试只会无限循环。
+ */
 async function invoke(name, args) {
   const pre = handlers.get('tools/pre-execute')?.[0]
   const exec = { name, arguments: args }
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const decision = pre === undefined ? { kind: 'allow' } : await pre(exec, allow)
-    if (decision.kind === 'ask') {
-      console.log(`     [门禁] ${String(decision.reason).split('\n')[0].slice(0, 100)}…（已批准）`)
-      continue
-    }
-    const output = await tools.get(name).execute(args, {})
-    const post = handlers.get('tools/post-execute')?.[0]
-    if (post !== undefined) await post(exec, { ok: true }, allow)
-    return output
+  const decision = pre === undefined ? { kind: 'allow' } : await pre(exec, allow)
+  if (decision.kind === 'ask') {
+    console.log(`     [门禁] ${String(decision.reason).split('\n')[0].slice(0, 96)}…（已批准）`)
   }
-  throw new Error(`${name} 的门禁连续要求确认，放弃`)
+  const output = await tools.get(name).execute(args, {})
+  const post = handlers.get('tools/post-execute')?.[0]
+  if (post !== undefined) await post(exec, { ok: true }, allow)
+  return output
 }
 
 /** 直达桥接，用来做「独立手段复核」。 */

@@ -7,9 +7,17 @@
  *
  * 它**不**测真实的 Lua 插件行为，那部分只能靠真机验收。这里测的是我们自己的 client。
  *
+ * **工具清单与参数校验都来自真实契约**（`lrbridge/dist/tool-contracts.js`），不再
+ * 手抄。手抄的 schema 一定会漂：原先这里 `set_develop_settings` 的 `settings` 是个
+ * 无约束的 `{}`，而真实契约有 `minProperties: 1` 和几十个字段；于是「我们下发的参数
+ * 形状对不对」这件事在测试里根本没人管。现在我们每收到一次调用就拿真实 schema 校验，
+ * **参数形状错了会直接变成 isError**，测试立刻炸——门禁那个「单数 photo_id 被当成
+ * 复数用」的漏洞就属于这一类，本来早该在这里被拦住。
+ *
  * 环境变量：
  *   SHEJING_FAKE_LR_FAIL=1      initialize 时直接退出（模拟桥接起不来）
  *   SHEJING_FAKE_LR_DIE_AFTER=1 处理完第一个工具调用后退出（模拟桥接中途死掉）
+ *   SHEJING_FAKE_LR_LOG=<路径>   把每次调用的工具名与参数追加进去
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -19,43 +27,20 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 
-const TOOLS = [
-  {
-    name: 'search_photos',
-    description: '假实现：按星级搜照片。',
-    inputSchema: { type: 'object', properties: { rating: { type: 'number' } }, additionalProperties: false },
-  },
-  {
-    name: 'get_photo_preview',
-    description: '假实现：返回一张预览图（结构化字段里带 file_path）。',
-    inputSchema: { type: 'object', properties: { photo_id: { type: 'string' } }, required: ['photo_id'], additionalProperties: false },
-  },
-  {
-    name: 'apply_auto',
-    description: '假实现：永远返回 success:false（真实 handler 失败时就是这样，且不设 isError）。',
-    inputSchema: { type: 'object', properties: { photo_ids: { type: 'array' } }, additionalProperties: false },
-  },
-  {
-    name: 'create_snapshot',
-    description: '假实现：建快照。',
-    inputSchema: { type: 'object', properties: { photo_id: {}, name: {} }, additionalProperties: false },
-  },
-  {
-    name: 'set_develop_settings',
-    description: '假实现：写入调色参数（会把下发的参数记进 SHEJING_FAKE_LR_LOG）。',
-    inputSchema: { type: 'object', properties: { photo_id: {}, settings: {} }, additionalProperties: false },
-  },
-  {
-    name: 'set_tone_curve',
-    description: '假实现：写曲线（同样记账）。',
-    inputSchema: { type: 'object', properties: { photo_id: {}, channel: {}, points: {} }, additionalProperties: false },
-  },
-  {
-    name: 'export_photos',
-    description: '假实现：真的在目标目录里写出文件，好让调用方核对数量。',
-    inputSchema: { type: 'object', properties: { photo_ids: {}, destination: {} }, additionalProperties: false },
-  },
-]
+const { TOOL_CONTRACTS } = await import('../lrbridge/dist/tool-contracts.js')
+const { default: Ajv } = await import('ajv')
+
+const ajv = new Ajv({ strict: false, allowUnionTypes: true, validateFormats: false })
+const validators = new Map(
+  TOOL_CONTRACTS.map(contract => [contract.name, ajv.compile(contract.inputSchema)]),
+)
+
+/** 广告真实契约——和真桥接广告的是同一份。 */
+const TOOLS = TOOL_CONTRACTS.map(contract => ({
+  name: contract.name,
+  description: contract.description,
+  inputSchema: contract.inputSchema,
+}))
 
 if (process.env.SHEJING_FAKE_LR_FAIL === '1') {
   console.error('[fake-lr] 按 SHEJING_FAKE_LR_FAIL=1 直接退出')
@@ -80,6 +65,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (logFile !== undefined && logFile !== '') {
     const { appendFileSync } = await import('node:fs')
     appendFileSync(logFile, `${JSON.stringify({ tool: name, args })}\n`)
+  }
+
+  // 参数必须符合该工具**真实**的 JSON Schema。不符合就是我们的代码写错了形状，
+  // 直接以 isError 返回——LR 工具包装会把它抛出来，测试不会静默通过。
+  const validate = validators.get(name)
+  if (validate !== undefined) {
+    if (!validate(args)) {
+      const detail = (validate.errors ?? [])
+        .map(e => `${e.instancePath || '/'} ${e.message}`)
+        .join('; ')
+      return {
+        content: [{
+          type: 'text',
+          text: `${name} 的参数不符合真实契约：${detail}（收到 ${JSON.stringify(args)}）`,
+        }],
+        isError: true,
+      }
+    }
   }
 
   if (process.env.SHEJING_FAKE_LR_DIE_AFTER === '1' && calls >= 1) {

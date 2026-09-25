@@ -30,6 +30,30 @@ const text = (value) => ({
   render: (_args, v) => [{ type: 'text', text: typeof v === 'string' ? v : String(v) }],
 })
 
+/**
+ * 桥接调用结果里有没有「其实失败了」。
+ *
+ * 真实 handler 失败时通常**不设** isError，而是返回 `{"success": false, "error": ...}`
+ * （见 docs/lightroom-classic/gotchas.md）。所以只看 isError 是不够的。
+ * 拿不到 JSON 时按「没失败」处理——工具结果本来就不一定是 JSON。
+ */
+function isFailure(result) {
+  if (result?.isError === true) return true
+  try {
+    const payload = JSON.parse(LightroomBridge.toText(result))
+    return payload !== null && typeof payload === 'object' && payload.success === false
+  } catch {
+    return false
+  }
+}
+
+/** 写入类调用必须显式成功，否则抛错——绝不能把没写进去当成写进去了。 */
+function assertWrote(result, what) {
+  if (!isFailure(result)) return
+  const detail = LightroomBridge.toText(result).replace(/\s+/g, ' ').slice(0, 200)
+  throw new Error(`${what} 失败：${detail}`)
+}
+
 /** 把 stdout/stderr 揉成给模型看的输出。 */
 function combine(result) {
   const parts = []
@@ -288,16 +312,30 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
 
       const previews = []
       const failures = []
+      const warnings = []
       for (const id of ids) {
         if (exec?.signal?.aborted) throw new Error('调用已取消')
         try {
           // 每个动作前先建检查点：不满意可以回到起点，而不是靠记忆重调。
-          await bridge.call('create_snapshot', { photo_id: id, name: snapshotName })
+          // 快照失败只是少一层保险，不阻断调色，但要如实报出来。
+          if (isFailure(await bridge.call('create_snapshot', { photo_id: id, name: snapshotName }))) {
+            warnings.push(`${id}：建快照失败，这一张没有可回滚的检查点`)
+          }
           if (Object.keys(resolved.settings).length > 0) {
-            await bridge.call('set_develop_settings', { photo_id: id, settings: resolved.settings })
+            // **必须检查返回值。** 真实 handler 失败时返回 {"success": false} 且
+            // **不设** isError（见 gotchas），不检查的话这里会静默跳过写入，而下面
+            // 照样渲染预览并报告「已写入并渲染」——等于对用户撒谎，还是最要命的那种：
+            // 他以为调色已经生效了。
+            assertWrote(
+              await bridge.call('set_develop_settings', { photo_id: id, settings: resolved.settings }),
+              `${id} 写入滑杆`,
+            )
           }
           for (const [channel, points] of Object.entries(resolved.curves)) {
-            await bridge.call('set_tone_curve', { photo_id: id, channel, points })
+            assertWrote(
+              await bridge.call('set_tone_curve', { photo_id: id, channel, points }),
+              `${id} 写入曲线 ${channel}`,
+            )
           }
           const preview = await bridge.call('get_photo_preview', { photo_id: id, size })
           previews.push({ id, path: preview?.structuredContent?.file_path ?? null, raw: LightroomBridge.toText(preview) })
@@ -307,6 +345,14 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
       }
 
       lines.push(`  已写入并渲染 ${previews.length} 张${failures.length === 0 ? '' : `，失败 ${failures.length} 张`}`)
+      if (warnings.length > 0) {
+        lines.push('  ⚠️ 提醒：')
+        for (const warning of warnings) lines.push(`    · ${warning}`)
+      }
+      if (failures.length > 0) {
+        lines.push('  失败明细：')
+        for (const failure of failures) lines.push(`    · ${failure}`)
+      }
 
       if (single && previews.length === 1 && previews[0].path !== null) {
         // 记下「这一套参数已经单张渲染过」——门禁的理由里要能说出这件事。

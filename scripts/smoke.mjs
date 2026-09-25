@@ -266,6 +266,22 @@ const wlAgain = await gate(lrCall('set_noise_reduction', ['w3']), allow)
 assert.equal(wlAgain.kind, 'allow', '已入白名单的参数不该再拦')
 console.log('门禁·白名单生效        → allow')
 
+/*
+ * 白名单必须是**参数级**的，不是照片级。
+ *
+ * 这条补的是审计员的变异 25：把照片 id 留在指纹里（也就是让指纹变成「这套参数
+ * 用在这几张照片上」），白名单在真实使用里**永远不会命中**——因为每次批量处理的
+ * 照片集合都不一样。而测试抓不住，因为上面那条断言重复调用时传的是**同一个
+ * 参数对象**，指纹当然一样。
+ *
+ * 所以这里换一批**不同的照片 id**、参数完全不变，问一句：放行吗？
+ */
+assert.equal(
+  (await gate(lrCall('set_noise_reduction', ['brand-new-1', 'brand-new-2']), allow)).kind,
+  'allow',
+  '换一批照片但参数相同，应当命中白名单——指纹是参数级的，不含照片 id')
+console.log('门禁·白名单是参数级的  → 换照片仍然 allow')
+
 const cullConfirm = { name: 'shejing_cull', arguments: { reject: ['x.ARW', 'y.ARW'], confirm: true } }
 console.log('门禁·剔除(confirm)   →', (await gate(cullConfirm, allow)).kind)
 assert.equal((await gate(cullConfirm, allow)).kind, 'ask', '真移动文件必须让用户看到完整名单再点头')

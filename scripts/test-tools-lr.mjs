@@ -41,10 +41,14 @@ await rm(path.join(dshHome, 'shejing', 'gates'), { recursive: true, force: true 
 await rm(LOG, { force: true })
 await mkdir(PHOTO_DIR, { recursive: true })
 await mkdir(BATCH_DIR, { recursive: true })
-const PHOTOS = ['DSC001.ARW', 'DSC002.ARW', 'DSC003.ARW'].map(n => path.join(PHOTO_DIR, n))
+// 可导入目录：归档阶段从这里出计划。
+const KEEP_DIR = path.join(PHOTO_DIR, '可导入')
+await mkdir(KEEP_DIR, { recursive: true })
+const PHOTOS = ['DSC001.ARW', 'DSC002.ARW', 'DSC003.ARW'].map(n => path.join(KEEP_DIR, n))
 for (const p of PHOTOS) await writeFile(p, 'not-a-real-raw')
 await writeFile(path.join(BATCH_DIR, 'manifest.json'), `${JSON.stringify({
-  batch_id: BATCH_ID, source_path: PHOTO_DIR, photo_count: 3, camera: [], updated: null, stages: {},
+  batch_id: BATCH_ID, source_path: PHOTO_DIR, photo_count: 3, camera: [], updated: null,
+  stages: { cull: { status: 'done', keep_dir: KEEP_DIR, kept: 3, rejected: 0 } },
 }, null, 1)}\n`)
 
 process.env.SHEJING_BRIDGE_ENTRY = FAKE
@@ -103,7 +107,7 @@ function check(label, fn) {
   }
 }
 
-console.log('调色阶段（插件 + 假桥接）测试\n')
+console.log('阶段工具（插件 + 假桥接）测试\n')
 
 /* ---------------------------------------------------------------- 1. 单张先行 */
 
@@ -195,11 +199,88 @@ check('指纹不同才拦得住（白名单是参数级的，不是「用过一�
 const files = readdirSync(BATCH_DIR)
 check('批次目录里留下了账本与计划', () => assert.ok(files.includes('manifest.json')))
 
+/* ---------------------------------------------------------------- 3. 归档 */
+
+console.log('\n—— 归档（真实导出，经假桥接）——')
+
+const plan = await invoke('shejing_archive', {
+  batch_id: BATCH_ID, picks: ['DSC001.ARW', 'DSC003.ARW'],
+})
+check('不带 confirm 只出计划，不导出', () => {
+  assert.equal(plan.decision.kind, 'allow', '出计划不该被门禁拦')
+  assert.ok(plan.output.includes('plan') || plan.output.includes('计划') || plan.output.includes('等你'),
+    `应当只给计划与建议：${plan.output.slice(0, 200)}`)
+  assert.ok(existsSync(path.join(BATCH_DIR, 'export-plan.json')), '应当写出精选计划')
+  const p = JSON.parse(readFileSync(path.join(BATCH_DIR, 'export-plan.json'), 'utf8'))
+  assert.deepEqual(p.picked, ['DSC001.ARW', 'DSC003.ARW'], '计划里的名单应当与点名一致')
+})
+check('没有导出目录产生', () => {
+  const dirs = readdirSync(BATCH_DIR).filter(name => name.startsWith('精选_'))
+  assert.equal(dirs.length, 0, `不该有导出目录，实际：${dirs.join(', ')}`)
+})
+
+const exportCall = await invoke('shejing_archive', {
+  batch_id: BATCH_ID, picks: ['DSC001.ARW', 'DSC003.ARW'], confirm: true,
+})
+check('带 confirm → 门禁先问用户', () => assert.equal(exportCall.decision.kind, 'ask'))
+check('门禁理由里说清了将导出多少张', () => {
+  assert.match(exportCall.decision.reason, /精选|导出/, `理由应当说明导出意图：${exportCall.decision.reason}`)
+})
+
+const exported = await invoke('shejing_archive', {
+  batch_id: BATCH_ID, picks: ['DSC001.ARW', 'DSC003.ARW'], confirm: true,
+}, { approve: true })
+check('批准后真的调了 export_photos', () => {
+  const call = fakeCalls().find(c => c.tool === 'export_photos')
+  assert.ok(call, '应当调用 export_photos')
+  assert.equal(call.args.photo_ids.length, 2, '应当传 2 张的绝对路径')
+  assert.ok(call.args.destination, '应当给目标目录')
+  assert.equal(call.args.quality, 100, '默认 JPEG 质量 100')
+  assert.equal(call.args.format, 'jpeg')
+})
+check('导出结果被核对（实际生成的文件数）', () => assert.match(exported.output, /实际文件数/))
+
+const manifest3 = JSON.parse(await readFile(path.join(BATCH_DIR, 'manifest.json'), 'utf8'))
+check('账本记下了 archive 段', () => {
+  assert.ok(manifest3.stages.archive, '应当有 archive 段')
+  assert.equal(manifest3.stages.archive.export_count, 2)
+  assert.deepEqual(manifest3.stages.archive.selected, ['DSC001.ARW', 'DSC003.ARW'])
+  assert.ok(existsSync(manifest3.stages.archive.export_dir), '导出目录应当真的存在')
+  const written = readdirSync(manifest3.stages.archive.export_dir)
+  assert.equal(written.length, 2, `导出目录里应当有 2 个文件，实际 ${written.join(', ')}`)
+})
+check('顺带生成了批次总结 SUMMARY.md', () => {
+  assert.ok(existsSync(path.join(BATCH_DIR, 'SUMMARY.md')), 'SUMMARY.md 应当存在')
+  const summary = readFileSync(path.join(BATCH_DIR, 'SUMMARY.md'), 'utf8')
+  assert.match(summary, /摄鲸批次总结/, '应当是批次总结')
+  assert.match(summary, /归档/, '应当有归档那一节')
+})
+
+/* ---------------------------------------------------------------- 4. 协议层失败 */
+
+console.log('\n—— 协议层失败要显式抛错 ——')
+// 假桥接对未知工具返回 isError:true。LR 工具包装必须把它抛出去，
+// 否则它只是一段普通文本，模型很可能当成正常结果读过去。
+let isErrorThrown = null
+try {
+  await tools.get('mcp__lightroom__list_watermarks').execute({}, {})
+} catch (error) {
+  isErrorThrown = String(error?.message ?? error)
+}
+check('isError 的结果会被当成失败抛出', () => {
+  assert.ok(isErrorThrown !== null, '应当抛错')
+  assert.match(isErrorThrown, /list_watermarks/, '错误里应当带上工具名')
+})
+check('载荷里的 success:false 不抛（那可能是假失败）', async () => {
+  const result = await tools.get('mcp__lightroom__apply_auto').execute({ photo_ids: ['x'] }, {})
+  assert.match(result, /success/, '应当把 payload 原样透出来让模型判断')
+})
+
 console.log()
 if (failed > 0) {
   console.error(`❌ ${failed} 个用例失败`)
 }
 // 必须显式退出：假桥接是个子进程，MCP 客户端会一直握着它，
 // 事件循环不会自己空掉（真机上由 DSH 的 effect 负责关闭）。
-console.log(failed === 0 ? '✅ 调色阶段测试通过' : '')
+console.log(failed === 0 ? '✅ 阶段工具测试通过' : '')
 process.exit(failed === 0 ? 0 : 1)

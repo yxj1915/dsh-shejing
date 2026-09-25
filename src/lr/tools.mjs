@@ -60,7 +60,18 @@ export function registerLightroomTools(ctx, bridge) {
       async execute(args, exec) {
         if (exec?.signal?.aborted) throw new Error('调用已取消')
         const result = await bridge.call(rawName, args ?? {})
-        return LightroomBridge.toText(result)
+        const text = LightroomBridge.toText(result)
+
+        // 协议层的失败（isError）必须显式抛出去，让 DSH 把它标成失败调用。
+        // 否则它只是一段普通文本，模型很可能当成正常结果读过去。
+        //
+        // 注意区分：载荷里的 `success: false` **不抛**——你自己的 gotcha 里写着
+        // 有些 handler 会返回 success:false 但事情其实做成了（add_ai_mask 就是），
+        // 那种情况要用独立手段复核，而不是在这里一刀切成失败。
+        if (result?.isError === true) {
+          throw new Error(`${rawName} 失败：${text}`)
+        }
+        return text
       },
     }))
     registered.push({ tool: toolName, raw: rawName, kind })

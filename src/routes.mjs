@@ -1,11 +1,22 @@
 /**
  * 宿主⇄面板的数据通道。
  *
- * 为什么用 `ctx.connection.fetch.register` 而不是 `ctx.webServer.register`：
- *   - `connection.fetch` 是**传输无关**的，网页端与桌面端（Electron）都通；
- *   - `webServer` 是网页端专属，桌面 composition 里根本不存在，用它注册的路由
- *     在桌面客户端里是死代码。
- * 路径必须是 `/api/<段>`，且每段只允许 `[A-Za-z0-9_$.-]`；精确匹配，无通配。
+ * 为什么用 `ctx.connection.fetch.register` 而不是直接 `ctx.webServer.register`：
+ *   - `connection.fetch` 是**传输无关**的抽象，由 `client-connection` 负责把它挂到
+ *     实际的载体上；换载体不用改我们一行代码；
+ *   - 直接向 `webServer` 注册会绕开连接层自己的鉴权围栏（`connection.admit`），
+ *     等于给自己的路由开一个没有 fence 的口子。
+ * 路径必须是 `/api/<段>`，且每段只允许 `[A-Za-z0-9_$.-]`；**精确匹配，无通配**。
+ *
+ * 关于桌面端（Electron）——这里曾经写错过一次，记下来免得再错：
+ *   早先的说法是「桌面 composition 里没有 webServer，所以 `/api` 路由在桌面端是
+ *   死代码」。那个结论来自 0.1.5 源码里的另一套实现（`apps/desktop-host` 的
+ *   `desktop.cordis.patch.yml` 确实禁用了 webserver）。但**对已安装的 0.1.7 不成立**：
+ *     · `@deepseek-ai/dsh-desktop-host` 的 dependencies 里就有 `dsh-host-webserver`；
+ *     · 实测桌面端进程对所有 `/api/*` 返回 **401 而不是 404**，而那个 401 正是
+ *       `/api` 前缀路由里的 `connection.admit()` 给出的——说明路由确实挂着。
+ *   结论：桌面端有活跃的 webserver，`connection.fetch` 注册的路由在两边都通。
+ *   真实的版本差异见 docs/DESIGN.md。
  *
  * 面板与工具共享同一份账本与同一个桥接实例，所以面板看到的状态就是工具看到的。
  */

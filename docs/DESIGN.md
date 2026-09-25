@@ -146,6 +146,38 @@ JPEG 走 APP1。`mdls` 只在缺关键字段时才兜底。时间戳也改用 EX
 
 产品侧的现实是：**桌面端验证必须先发一次 npm 包。**
 
+### 9.1 一个曾经写错的判断：桌面端到底有没有 webserver
+
+早先的调研结论是「桌面 composition 禁用了 `webserver`，所以 `ctx.webServer` 与挂在
+它上面的 `/api` 路由在桌面端都是死代码」。**这个结论对已安装的 0.1.7 不成立。**
+
+它来自 0.1.5 源码里的 `apps/desktop-host/config/desktop.cordis.patch.yml`——但
+0.1.7 的 Electron 是完全不同的实现。三条证据推翻了它：
+
+1. `desktop-runtime.json` 的包清单里有 `@deepseek-ai/dsh-host-webserver@0.1.7-rc.2`；
+2. `@deepseek-ai/dsh-desktop-host` 的 `dependencies` 里**直接依赖**它；
+3. 实测桌面端进程对 `/api/definitely-not-a-route` 返回 **401 而不是 404**——
+   而那个 401 正是 `/api` 前缀路由里的 `connection.admit()` 给出的，说明路由挂着。
+
+**教训**：源码 checkout 与已安装产物是两个东西。跨版本推断必须落到实测或产物本身。
+我们仍然用 `ctx.connection.fetch.register` 而不是直接注册到 `webServer`——但理由换成了
+「传输无关 + 不绕开连接层的鉴权围栏」，而不是原来那个错误的「桌面端没有 webServer」。
+
+### 9.2 桌面端与我们的隔离实例是同构的
+
+`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 是：
+
+```json
+["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+```
+
+而我们的隔离实例（用来跑端到端验证的那个）是**同样两个 bundle，只多一个 `dsh-shejing`**。
+桌面端 Electron 外壳加载的正是同一套 `dsh-web-app`，客户端模块表（`dsh-client-modules`）
+由它提供——也就是说，桌面端加载第三方客户端插件的机制**就是我们已经验证通过的那一条**。
+
+仍然没被证明的只有一件事：Electron 外壳本身会不会在加载我们的浏览器半边时出问题。
+那需要真的装一次——所以**先发一个预发布版本到 npm，用 GUI 装上确认，再发正式版**。
+
 ## 10. 端到端回归抓到的两个真 bug
 
 `scripts/regression.mjs` 用一份**克隆出来的真实 75 张批次**驱动真实工具实现。

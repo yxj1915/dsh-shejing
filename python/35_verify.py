@@ -61,6 +61,50 @@ def query(catalog, sql, params=()):
 
 
 
+
+def column_names(con, table):
+    """某张表真实有哪些列。不同 Lightroom 版本列名会不一样。"""
+    try:
+        return {row[1] for row in con.execute("PRAGMA table_info(%s)" % table)}
+    except sqlite3.Error:
+        return set()
+
+
+def resolve_columns(con):
+    """把列名解析成**这个目录数据库真实用的**名字。
+
+    踩过的坑：我们最初假设 AgLibraryFile 有 `basename`、AgLibraryFolder 有 `path`，
+    而真实 Lightroom 用的是 **`baseName`** 与 **`pathFromRoot`**。后果是
+    「目录数据库交叉核对」在真实目录上直接抛 `no such column`，
+    也就是 shejing_verify 的**最后一道防线从来没真正跑起来过**——
+    单元测试用的合成库恰好按我们的假设建表，所以一路全绿。
+    这里按 PRAGMA 的结果自适应，两种命名都能用。
+    """
+    file_cols = column_names(con, "AgLibraryFile")
+    folder_cols = column_names(con, "AgLibraryFolder")
+    return dict(
+        basename="baseName" if "baseName" in file_cols else "basename",
+        folder_path="pathFromRoot" if "pathFromRoot" in folder_cols else "path",
+        has_root="absolutePath" in column_names(con, "AgLibraryRootFolder"),
+    )
+
+
+def resolve_columns_of(catalog):
+    """打开一份只读副本，解析这个目录数据库**真实**用的列名。"""
+    tmp = tempfile.mkdtemp(prefix="shejing-cat-cols-")
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            src = catalog + suffix
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(tmp, "cat.lrcat" + suffix))
+        con = sqlite3.connect(os.path.join(tmp, "cat.lrcat"))
+        try:
+            return resolve_columns(con)
+        finally:
+            con.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 def _norm_path(p):
     """把路径规范化成可比较的键：绝对 + 归一 + 大小写折叠（macOS 默认不敏感）。"""
     return os.path.normpath(os.path.abspath(p)).casefold()
@@ -119,11 +163,14 @@ def main():
 
     # 按**完整路径**取，不按文件名。同名文件在别的文件夹里时，按文件名会把
     # 「从没导入过」判成「已导入」——而识破这种假成功正是本脚本存在的理由。
+    cols = resolve_columns_of(catalog)
     rows = query(
         catalog,
-        FULL_PATH_SQL + ", i.rating, i.colorLabels, i.pick"
+        "SELECT rf.absolutePath, fo.%s, fl.%s, fl.extension, i.rating, i.colorLabels, i.pick"
         " FROM Adobe_images i JOIN AgLibraryFile fl ON fl.id_local = i.rootFile"
-        + FULL_PATH_JOINS,
+        " LEFT JOIN AgLibraryFolder fo ON fo.id_local = fl.folder"
+        " LEFT JOIN AgLibraryRootFolder rf ON rf.id_local = fo.rootFolder"
+        % (cols["folder_path"], cols["basename"]),
     )
     by_path = {}
     for root, folder, base, ext, rating, labels, pick in rows:
@@ -143,7 +190,7 @@ def main():
 
     kw_rows = query(
         catalog,
-        "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension, k.name"
+        "SELECT rf.absolutePath, fo.%s, fl.%s, fl.extension, k.name" % (cols["folder_path"], cols["basename"]) +
         " FROM AgLibraryKeywordImage ki"
         " JOIN AgLibraryKeyword k ON k.id_local = ki.tag"
         " JOIN Adobe_images i ON i.id_local = ki.image"
@@ -158,7 +205,7 @@ def main():
 
     coll_rows = query(
         catalog,
-        "SELECT rf.absolutePath, fo.path, fl.basename, fl.extension, c.name"
+        "SELECT rf.absolutePath, fo.%s, fl.%s, fl.extension, c.name" % (cols["folder_path"], cols["basename"]) +
         " FROM AgLibraryCollectionImage ci"
         " JOIN AgLibraryCollection c ON c.id_local = ci.collection"
         " JOIN Adobe_images i ON i.id_local = ci.image"

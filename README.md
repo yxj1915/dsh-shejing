@@ -94,9 +94,14 @@ parameter. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ```bash
 node scripts/build-client.mjs   # build the browser half (no toolchain needed — it is a wrapper)
-node scripts/smoke.mjs          # plugin surface + every gate path
-node scripts/regression.mjs <cloned-batch-dir>   # end-to-end on a real batch
+node scripts/test.mjs           # plugin surface + every gate path + the Python tests
+node scripts/regression.mjs <cloned-batch-dir>   # end-to-end on a real batch (~15 min for 75 frames)
 ```
+
+`scripts/regression.mjs` drives the real tool implementations against a cloned batch, so it covers
+parameter translation, path resolution and ledger writes — not just the Python scripts. It needs
+`DSH_HOME` set so it never writes into your real `~/.dsh`. Pass `--reuse` to skip the slow checkup
+stage and re-test only the downstream steps.
 
 Design decisions and the reasoning behind them are in [docs/DESIGN.md](docs/DESIGN.md).
 

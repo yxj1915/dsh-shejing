@@ -34,7 +34,8 @@
     "build:client": "node scripts/build-client.mjs",
     "prepublishOnly": "node scripts/build-client.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "regression": "node scripts/regression.mjs"
+    "regression": "node scripts/regression.mjs",
+    "test": "node scripts/test.mjs"
   },
   "dsh": {
     "bundle": {

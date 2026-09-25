@@ -28,6 +28,8 @@ RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf", ".orf", ".rw2",
            ".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 CST = timezone(timedelta(hours=8))
 SHEET_CELL, SHEET_COLS, SHEET_PAD = 300, 9, 22
+# 每张照片只解码到这个宽度一次，小图与清晰度分析都从它派生。
+BIG_WIDTH = 1200
 
 
 # ------------------------------------------------------------------ 基础工具
@@ -74,8 +76,10 @@ def group_bursts(known, window, hash_max):
     """
     for it in known:
         # 已经有哈希就不重算——这让分组逻辑可以用合成数据单测（不必真解码图片）。
-        if it.get("hash") is None and it.get("small"):
-            it["hash"] = dhash(it["small"])
+        # 兜底来源是**大图**而不是缩略图：哈希不该依赖派生出来的图，否则换一个
+        # 重采样核就可能让分组漂移。
+        if it.get("hash") is None and it.get("big"):
+            it["hash"] = dhash(it["big"])
 
     used, groups = set(), []
     for i, a in enumerate(known):
@@ -113,6 +117,24 @@ def decode(src, dst, width):
     r = sh(["sips", "-s", "format", "jpeg", "--resampleWidth", str(width),
             src, "--out", dst])
     return r.returncode == 0 and os.path.exists(dst)
+
+
+def shrink(src, dst, width):
+    """从已解码的大图派生小图。
+
+    sips 解码一张 ARW 约 7 秒，Pillow 缩一张 1200px JPEG 约 0.05 秒——
+    所以每张只该调一次 sips，其余尺寸用 Pillow 派生。失败返回 False，
+    由调用方回退到 sips。
+    """
+    if os.path.exists(dst):
+        return True
+    try:
+        im = ImageOps.exif_transpose(Image.open(src))
+        im.thumbnail((width, width), Image.LANCZOS)
+        im.convert("RGB").save(dst, "JPEG", quality=88)
+        return os.path.exists(dst)
+    except Exception:
+        return False
 
 
 def gray(path):
@@ -232,10 +254,14 @@ def main():
                 return float(exif_value)
             return num(m.get(mdls_key))
 
-        small = os.path.join(cache, "%03d_small.jpg" % i)
+        # 每张**只调一次 sips**：实测单次 sips 解码 ARW 约 7 秒，而 Pillow 从
+        # 1200px 缩到 300px 只要 0.05 秒。原先每张调两次 sips，75 张要 17 分钟、
+        # 500 张要两小时；现在砍掉一半。
         big = os.path.join(cache, "%03d_big.jpg" % i)
-        decode(p, small, SHEET_CELL)
-        decode(p, big, 1200)
+        decode(p, big, BIG_WIDTH)
+        small = os.path.join(cache, "%03d_small.jpg" % i)
+        if not shrink(big, small, SHEET_CELL):
+            decode(p, small, SHEET_CELL)  # 兜底：Pillow 失败时回退到 sips
         exposure = pick(md.get("exposure"), "kMDItemExposureTimeSeconds")
         fnumber = pick(md.get("fnumber"), "kMDItemFNumber")
         iso = pick(md.get("iso"), "kMDItemISOSpeed")
@@ -249,6 +275,8 @@ def main():
             model=model,
             small=small if os.path.exists(small) else None,
             big=big if os.path.exists(big) else None,
+            # 感知哈希从**大图**算：它决定分组，不该随缩略图的生成方式变化。
+            hash=dhash(big) if os.path.exists(big) else None,
             ev=ev_rel(exposure, fnumber, iso),
         ))
         if i % 20 == 0:

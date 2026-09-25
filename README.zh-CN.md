@@ -86,9 +86,12 @@ fork（MIT，上游 [`Automaat/lightroom-mcp`](https://github.com/Automaat/light
 
 ```bash
 node scripts/build-client.mjs   # 构建浏览器半边（不需要任何打包工具链）
-node scripts/smoke.mjs          # 插件注册面 + 全部门禁路径
-node scripts/regression.mjs <克隆出来的批次目录>   # 真实批次的端到端回归
+node scripts/test.mjs           # 插件注册面 + 全部门禁路径 + Python 侧测试
+node scripts/regression.mjs <克隆出来的批次目录>   # 真实批次的端到端回归（75 张约 15 分钟）
 ```
+
+`scripts/regression.mjs` 驱动的是**真实工具实现**，所以覆盖到参数翻译、路径解析、账本写入，
+而不只是 Python 脚本。它要求设置 `DSH_HOME`，以免写进你真实的 `~/.dsh`。
 
 设计取舍与理由见 [docs/DESIGN.md](docs/DESIGN.md)。
 

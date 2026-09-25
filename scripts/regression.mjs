@@ -16,8 +16,8 @@
 
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync, statSync } from 'node:fs'
+import { readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { rm } from 'node:fs/promises'
 
 const source = process.argv[2]
 if (source === undefined || !existsSync(source)) {
@@ -168,6 +168,106 @@ const verifyHead = verifyOut.split('\n').filter(line => line.includes('目录库
 console.log(verifyHead.slice(0, 4).map(l => `   ${l.trim()}`).join('\n'))
 assert.ok(verifyOut.includes('目录库'), '目录数据库核对没跑起来')
 console.log('   ⓘ 渲染预览与调色读回需要 Lightroom 在跑——本次跳过。')
+
+/* ---------------------------------------------------------------- 5. 归档计划 */
+
+step('⑤ 归档计划（shejing_archive 不带 confirm）')
+// 先把可导入目录里挑两张，模拟用户点名导出。
+const keepFiles = readdirSync(keepDir).filter(f => f.toUpperCase().endsWith('.ARW')).sort()
+assert.ok(keepFiles.length >= 2, '可导入目录里应当有照片')
+const picks = keepFiles.slice(0, 2)
+const planOut = await call('shejing_archive', {
+  source, picks, ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+const planFile = path.join(batchDir, 'export-plan.json')
+assert.ok(existsSync(planFile), '精选计划没写出来')
+const plan = JSON.parse(await readFile(planFile, 'utf8'))
+assert.deepEqual(plan.picked, picks, '计划里的名单应当与点名的一致')
+assert.equal(plan.catalog !== null, true, '应当定位到目录数据库')
+console.log(`   计划：${plan.picked.length} 张；目录库 ${plan.catalog ? '已定位' : '未找到'}`)
+console.log(`   计划文件内容与点名一致 ✓（导出本身需要 Lightroom，未执行）`)
+void planOut
+
+/* ---------------------------------------------------------------- 6. 整理（只重命名） */
+
+step('⑥ 整理 · 只重命名（shejing_organize，不需要 Lightroom）')
+// 先故意改成不符合模板的名字，才有东西可测（否则是 no-op，等于没测）。
+// 注意模板是 `{date}_{name}`，而 `{date}` 来自**文件内嵌 EXIF**、`{name}` 只剥掉
+// 已有的日期前缀。所以 `zz-xxxx-0.ARW` 会被改成 `2026-09-02_zz-xxxx-0.ARW`
+// ——不是改回原名。这正是预期行为（日期以 EXIF 为准，不信任文件名）。
+//
+// 乱名必须**每轮唯一**：脚本会检测目标名冲突并跳过，如果用固定名字，第二次跑
+// 就会因为「目标已存在」而计划为空——那时断言 dry-run 字样会失败，而真正的原因
+// 只是克隆没还原。
+const token = `zz${Date.now().toString(36)}`
+const toRename = keepFiles.slice(0, 2)
+const scrambled = toRename.map((_, index) => `${token}-${index}.ARW`)
+for (const [index, name] of toRename.entries()) {
+  await rename(path.join(keepDir, name), path.join(keepDir, scrambled[index]))
+}
+console.log(`   先改成：${scrambled.join(', ')}`)
+
+const dry = await call('shejing_organize', {
+  source, rename: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+assert.ok(dry.includes(token), '预演输出里应当列出待改名的乱名文件')
+assert.ok(dry.includes('dry-run'), '预演应当明确标注 dry-run')
+assert.ok(scrambled.every(name => existsSync(path.join(keepDir, name))), '预演不该改名')
+console.log('   预演：文件名未变 ✓')
+
+await call('shejing_organize', {
+  source, rename: true, rename_confirm: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+for (const name of scrambled) {
+  const base = name.replace(/\.ARW$/i, '')
+  const hit = readdirSync(keepDir).filter(f => f.endsWith(`_${base}.ARW`))
+  assert.equal(hit.length, 1, `应当出现一个带 EXIF 日期前缀的 ${base}.ARW，实际 ${JSON.stringify(hit)}`)
+  assert.ok(!existsSync(path.join(keepDir, name)), `${name} 应当已不存在`)
+  console.log(`   ${name} → ${hit[0]} ✓（日期取自 EXIF）`)
+}
+
+/* ---------------------------------------------------------------- 7. 复盘 */
+
+step('⑦ 复盘（shejing_retro，不需要 Lightroom）')
+const rulesFile = path.join(dshHome, 'shejing', 'shooting-rules.md')
+const beforeRules = existsSync(rulesFile) ? (await readFile(rulesFile, 'utf8')).length : 0
+
+const retroDry = await call('shejing_retro', {
+  title: '回归测试规则', body: '这条是端到端回归写的。', ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+assert.ok(retroDry.includes('等你'), '不带 confirm 应当只给建议、不写入')
+const afterDry = existsSync(rulesFile) ? (await readFile(rulesFile, 'utf8')).length : 0
+assert.equal(afterDry, beforeRules, '预演不该写规则文件')
+console.log('   预演：规则文件未变 ✓')
+
+await call('shejing_retro', {
+  title: '回归测试规则', body: '这条是端到端回归写的。', evidence: '自动化测试',
+  confirm: true, ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+const afterRules = await readFile(rulesFile, 'utf8')
+assert.ok(afterRules.length > beforeRules, '规则文件应当变长')
+assert.ok(afterRules.includes('回归测试规则'), '规则标题应当写进去')
+const retroManifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+assert.ok(Array.isArray(retroManifest.shooting_lessons) && retroManifest.shooting_lessons.length > 0,
+  '账本应当记下 shooting_lessons')
+assert.ok(retroManifest.stages.retro, '账本应当记下复盘阶段')
+console.log(`   真写入：规则文件 ${beforeRules} → ${afterRules.length} 字符，账本已记账 ✓`)
+
+/* ---------------------------------------------------------------- 8. 降级 */
+
+step('⑧ 降级：Lightroom 不可用时的行为')
+// 这台机器上 Lightroom 没开。工具**刻意不抛异常**（逐张 try/catch，把失败记进报告），
+// 所以这里断言的是「报告得清楚」，而不是「抛错」。
+const gradeOut = await call('shejing_grade', {
+  photo_ids: [path.join(keepDir, picks[0])], style: 'A',
+  ...(batchId === undefined ? {} : { batch_id: batchId }),
+})
+assert.ok(/Lightroom|桥接|bridge/i.test(gradeOut), '报告里应当说清是 Lightroom 链路问题')
+assert.ok(/失败 1 张|一张都没有渲染成功/.test(gradeOut), '报告里应当明说没有渲染成功')
+// 关键：没有图可看时**不能**建议用户去看图——那会诱导模型描述一个不存在的结果。
+assert.ok(!/请把渲染图交给用户看/.test(gradeOut), '没有渲染成功时不该建议用户看渲染图')
+console.log(`   失败说清楚了：${(gradeOut.match(/⚠️ 失败：[\s\S]*/) ?? [''])[0].split('\n')[1]?.trim().slice(0, 100)}…`)
+console.log('   没有图可看时不会诱导模型描述渲染结果 ✓')
 
 /* ---------------------------------------------------------------- 汇总 */
 

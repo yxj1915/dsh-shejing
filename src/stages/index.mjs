@@ -345,10 +345,15 @@ export function registerStageTools(ctx, { bridge, log, config, ledger }) {
       }
 
       lines.push('', '② 建议')
-      if (single) {
+      if (previews.length === 0) {
+        // 这里必须与「有图可看」区分开：否则模型会照着建议去让用户看一张
+        // 根本不存在的渲染图。回归测试专门守这条。
+        lines.push('  ⚠️ 一张都没有渲染成功，所以现在**没有任何图可以给用户看**。')
+        lines.push('  先解决 Lightroom 链路（跑 shejing_doctor 自检），再重跑本步；不要向用户描述渲染结果。')
+      } else if (single) {
         lines.push('  这是单张先行。请把渲染图交给用户看，他认可后再对这批照片批量调用本工具。')
       } else {
-        lines.push('  批量已执行。若某几张不满意，用 create_snapshot 的名字回滚，或对该张重新调参。')
+        lines.push(`  批量已执行 ${previews.length} 张。若某几张不满意，用上面 create_snapshot 的名字回滚，或对该张重新调参。`)
       }
 
       lines.push('', '③ 预览图（请用 read_image 打开并给用户看）')

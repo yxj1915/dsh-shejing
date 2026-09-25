@@ -53,6 +53,9 @@ await writeFile(path.join(BATCH_DIR, 'manifest.json'), `${JSON.stringify({
 
 process.env.SHEJING_BRIDGE_ENTRY = FAKE
 process.env.SHEJING_FAKE_LR_LOG = LOG
+const LIMIT_FILE = path.join(dshHome, 'fake-export-limit.txt')
+process.env.SHEJING_FAKE_LR_EXPORT_LIMIT_FILE = LIMIT_FILE
+await writeFile(LIMIT_FILE, '')
 delete process.env.SHEJING_FAKE_LR_FAIL
 
 /* ---------------------------------------------------------------- 假上下文 */
@@ -305,6 +308,42 @@ check('载荷里的 success:false 不抛（那可能是假失败）', async () =
   const result = await tools.get('mcp__lightroom__apply_auto').execute({ photo_ids: ['x'] }, {})
   assert.match(result, /success/, '应当把 payload 原样透出来让模型判断')
 })
+
+/*
+ * 「实际文件数」这个核对必须**真的有牙齿**。
+ *
+ * 审计员的变异 22 把它换成 `actual = plan.picked.length`（即用计划数量冒充统计），
+ * 测试照样全绿——因为假桥接恰好写出 2 个文件，而断言只检查「实际文件数」这几个字
+ * 出现过、以及 export_count === 2，两者在伪造下都不变。
+ *
+ * 现在让假桥接**只写出 1 个**：如果调用方真的去数了目录，就必然报出不一致，
+ * 并且账本记的是 1 而不是 2。
+ */
+{
+  // 必须先把上一次导出留下的文件清掉：归档用的是**同一个**目标目录，
+  // 里面已经躺着上一次那 2 个文件，数出来当然还是 2——限制根本没被验到。
+  const beforeManifest = JSON.parse(await readFile(path.join(BATCH_DIR, 'manifest.json'), 'utf8'))
+  const staleDir = beforeManifest.stages.archive?.export_dir
+  if (typeof staleDir === 'string' && existsSync(staleDir)) {
+    await rm(staleDir, { recursive: true, force: true })
+  }
+  await writeFile(LIMIT_FILE, '1')
+  const partial = await invoke('shejing_archive', {
+    batch_id: BATCH_ID, picks: ['DSC001.ARW', 'DSC003.ARW'], confirm: true,
+  }, { approve: true })
+  await writeFile(LIMIT_FILE, '')
+
+  check('实际少于计划时必须报「不一致，请复核」', () => {
+    assert.match(String(partial.output), /不一致/,
+      `计划 2 张但只落盘 1 张，输出必须点出来：${String(partial.output).slice(-160)}`)
+  })
+  check('账本记的是**实际**落盘数，不是计划数', () => {
+    const m = JSON.parse(readFileSync(path.join(BATCH_DIR, 'manifest.json'), 'utf8'))
+    assert.equal(m.stages.archive.export_count, 1,
+      `桥接只写出 1 个文件，账本记的却是 ${m.stages.archive.export_count}`
+      + '——记计划数等于把核对架空')
+  })
+}
 
 console.log()
 if (failed > 0) {

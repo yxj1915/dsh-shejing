@@ -177,7 +177,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const destination = String(args.destination ?? '')
     const ids = Array.isArray(args.photo_ids) ? args.photo_ids : []
     mkdirSync(destination, { recursive: true })
-    for (const id of ids) {
+    // 只写出前 n 个文件，模拟「Lightroom 少导了」（桥接报成功、但目标目录里
+    // 并没有那么多）。测试拿它验证调用方**真的**去数了文件，而不是把计划数量
+    // 当成结果。
+    //
+    // 限制从**文件**读，不是从环境变量读：桥接复用一条长连接，子进程的环境在
+    // 第一次调用时就定死了，测试中途再设 process.env 根本传不进去（我第一版就是
+    // 这么写的，结果限制没生效）。另外必须区分「没设」与「设成 0」——
+    // `Number('')` 等于 0，直接拿来用会让正常导出一个文件都不写。
+    let limit = null
+    const limitFile = process.env.SHEJING_FAKE_LR_EXPORT_LIMIT_FILE
+    if (limitFile !== undefined && limitFile !== '') {
+      try {
+        const { readFileSync } = await import('node:fs')
+        const raw = readFileSync(limitFile, 'utf8').trim()
+        if (raw !== '') {
+          const parsed = Number(raw)
+          if (Number.isFinite(parsed) && parsed >= 0) limit = parsed
+        }
+      } catch { /* 文件不在就是不限制 */ }
+    }
+    const toWrite = limit === null ? ids : ids.slice(0, limit)
+    for (const id of toWrite) {
       const base = path.basename(String(id)).replace(/\.[^.]+$/u, '')
       writeFileSync(path.join(destination, `${base}.jpg`), 'fake-jpeg')
     }
